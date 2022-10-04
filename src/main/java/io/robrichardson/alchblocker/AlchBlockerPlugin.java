@@ -5,11 +5,13 @@ import javax.inject.Inject;
 import lombok.extern.slf4j.Slf4j;
 import net.runelite.api.*;
 import net.runelite.api.events.MenuOptionClicked;
+import net.runelite.api.events.ScriptPostFired;
 import net.runelite.api.widgets.Widget;
 import net.runelite.api.widgets.WidgetInfo;
 import net.runelite.client.callback.ClientThread;
 import net.runelite.client.config.ConfigManager;
 import net.runelite.client.eventbus.Subscribe;
+import net.runelite.client.events.ConfigChanged;
 import net.runelite.client.game.ItemManager;
 import net.runelite.client.plugins.Plugin;
 import net.runelite.client.plugins.PluginDescriptor;
@@ -18,6 +20,7 @@ import net.runelite.client.util.Text;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
+import java.util.stream.Collectors;
 
 @Slf4j
 @PluginDescriptor(
@@ -39,26 +42,46 @@ public class AlchBlockerPlugin extends Plugin
 
 	List<Integer> hiddenItems = new ArrayList<>();
 
+	boolean isAlching = false;
+
 	@Override
-	protected void shutDown() throws Exception
-	{
+	protected void startUp() throws Exception {
+		if(isAlching) {
+			clientThread.invoke(this::hideBlockedItems);
+		}
+	}
+
+	@Override
+	protected void shutDown() throws Exception {
 		clientThread.invoke(this::showBlockedItems);
 	}
 
 	@Provides
-	AlchBlockerConfig provideConfig(ConfigManager configManager)
-	{
+	AlchBlockerConfig provideConfig(ConfigManager configManager) {
 		return configManager.getConfig(AlchBlockerConfig.class);
 	}
 
+	@Subscribe
+	public void onConfigChanged(ConfigChanged event) {
+		if (!AlchBlockerConfig.GROUP.equals(event.getGroup())) return;
+		if(isAlching) {
+			clientThread.invoke(this::hideBlockedItems);
+		}
+	}
+
 	@Subscribe()
-	public void onMenuOptionClicked(MenuOptionClicked event)
-	{
+	public void onMenuOptionClicked(MenuOptionClicked event) {
 		String menuTarget = Text.removeTags(event.getMenuTarget());
-		if(Objects.equals(event.getMenuOption(), "Cast") && (Objects.equals(menuTarget, "High Level Alchemy") || Objects.equals(menuTarget, "Low Level Alchemy"))) {
-			hideBlockedItems();
-		} else {
+		isAlching = Objects.equals(event.getMenuOption(), "Cast") && (Objects.equals(menuTarget, "High Level Alchemy") || Objects.equals(menuTarget, "Low Level Alchemy"));
+		if(!isAlching) {
 			showBlockedItems();
+		}
+	}
+
+	@Subscribe
+	private void onScriptPostFired(ScriptPostFired event) {
+		if (event.getScriptId() == ScriptID.INVENTORY_DRAWITEM && isAlching) {
+			hideBlockedItems();
 		}
 	}
 
@@ -69,12 +92,16 @@ public class AlchBlockerPlugin extends Plugin
 		}
 
 		for (Widget inventoryItem : Objects.requireNonNull(inventory.getChildren())) {
-			List<String> blockedItems = Text.fromCSV(config.blockedItems());
-			for(String blockedItem : blockedItems) {
+			if(!inventoryItem.isHidden()) {
 				String itemName = Text.removeTags(inventoryItem.getName()).toLowerCase();
-				if(itemName.equals(blockedItem.toLowerCase())) {
+				List<String> blockedItems = Text.fromCSV(config.blockedItems()).stream()
+						.map(String::toLowerCase)
+						.collect(Collectors.toList());
+				if(blockedItems.contains(itemName)) {
 					inventoryItem.setHidden(true);
-					hiddenItems.add(inventoryItem.getId());
+					if(!hiddenItems.contains(inventoryItem.getItemId())) {
+						hiddenItems.add(inventoryItem.getItemId());
+					}
 				}
 			}
 		}
@@ -91,8 +118,9 @@ public class AlchBlockerPlugin extends Plugin
 		}
 
 		for (Widget inventoryItem : Objects.requireNonNull(inventory.getChildren())) {
-			if(hiddenItems.contains(inventoryItem.getId())) {
+			if(inventoryItem.isHidden() && hiddenItems.contains(inventoryItem.getItemId())) {
 				inventoryItem.setHidden(false);
+				hiddenItems.remove((Integer) inventoryItem.getItemId());
 			}
 		}
 
