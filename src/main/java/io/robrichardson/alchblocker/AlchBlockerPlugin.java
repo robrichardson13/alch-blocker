@@ -116,7 +116,6 @@ public class AlchBlockerPlugin extends Plugin
 		for (Widget inventoryItem : Objects.requireNonNull(inventory.getChildren())) {
 			if(inventoryItem.isHidden() && hiddenItems.contains(inventoryItem.getItemId())) {
 				inventoryItem.setHidden(false);
-				hiddenItems.remove(inventoryItem.getItemId());
 			}
 		}
 
