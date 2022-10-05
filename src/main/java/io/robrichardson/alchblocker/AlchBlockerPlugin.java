@@ -17,9 +17,7 @@ import net.runelite.client.plugins.Plugin;
 import net.runelite.client.plugins.PluginDescriptor;
 import net.runelite.client.util.Text;
 
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Objects;
+import java.util.*;
 import java.util.stream.Collectors;
 
 @Slf4j
@@ -40,15 +38,15 @@ public class AlchBlockerPlugin extends Plugin
 	@Inject
 	private ItemManager itemManager;
 
-	List<Integer> hiddenItems = new ArrayList<>();
-
+	Set<String> blockedItems = new HashSet<>();
+	Set<Integer> hiddenItems = new HashSet<>();
 	boolean isAlching = false;
 
 	@Override
 	protected void startUp() throws Exception {
-		if(isAlching) {
-			clientThread.invoke(this::hideBlockedItems);
-		}
+		blockedItems = Text.fromCSV(config.blockedItems()).stream()
+				.map(String::toLowerCase)
+				.collect(Collectors.toSet());
 	}
 
 	@Override
@@ -64,6 +62,9 @@ public class AlchBlockerPlugin extends Plugin
 	@Subscribe
 	public void onConfigChanged(ConfigChanged event) {
 		if (!AlchBlockerConfig.GROUP.equals(event.getGroup())) return;
+		blockedItems = Text.fromCSV(config.blockedItems()).stream()
+				.map(String::toLowerCase)
+				.collect(Collectors.toSet());
 		if(isAlching) {
 			clientThread.invoke(this::hideBlockedItems);
 		}
@@ -94,14 +95,9 @@ public class AlchBlockerPlugin extends Plugin
 		for (Widget inventoryItem : Objects.requireNonNull(inventory.getChildren())) {
 			if(!inventoryItem.isHidden()) {
 				String itemName = Text.removeTags(inventoryItem.getName()).toLowerCase();
-				List<String> blockedItems = Text.fromCSV(config.blockedItems()).stream()
-						.map(String::toLowerCase)
-						.collect(Collectors.toList());
 				if(blockedItems.contains(itemName)) {
 					inventoryItem.setHidden(true);
-					if(!hiddenItems.contains(inventoryItem.getItemId())) {
-						hiddenItems.add(inventoryItem.getItemId());
-					}
+					hiddenItems.add(inventoryItem.getItemId());
 				}
 			}
 		}
@@ -120,7 +116,7 @@ public class AlchBlockerPlugin extends Plugin
 		for (Widget inventoryItem : Objects.requireNonNull(inventory.getChildren())) {
 			if(inventoryItem.isHidden() && hiddenItems.contains(inventoryItem.getItemId())) {
 				inventoryItem.setHidden(false);
-				hiddenItems.remove((Integer) inventoryItem.getItemId());
+				hiddenItems.remove(inventoryItem.getItemId());
 			}
 		}
 
