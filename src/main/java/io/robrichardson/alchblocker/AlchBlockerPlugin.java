@@ -16,6 +16,7 @@ import net.runelite.client.game.ItemManager;
 import net.runelite.client.plugins.Plugin;
 import net.runelite.client.plugins.PluginDescriptor;
 import net.runelite.client.util.Text;
+import net.runelite.client.util.WildcardMatcher;
 
 import java.util.*;
 import java.util.stream.Collectors;
@@ -38,15 +39,15 @@ public class AlchBlockerPlugin extends Plugin
 	@Inject
 	private ItemManager itemManager;
 
-	Set<String> blockedItems = new HashSet<>();
+	final int inventoryWidgetWidth = 36;
+	final int inventoryWidgetHeight = 32;
+	Set<String> itemList = new HashSet<>();
 	Set<Integer> hiddenItems = new HashSet<>();
 	boolean isAlching = false;
 
 	@Override
 	protected void startUp() throws Exception {
-		blockedItems = Text.fromCSV(config.blockedItems()).stream()
-				.map(String::toLowerCase)
-				.collect(Collectors.toSet());
+		itemList = convertToListToSet();
 	}
 
 	@Override
@@ -62,9 +63,7 @@ public class AlchBlockerPlugin extends Plugin
 	@Subscribe
 	public void onConfigChanged(ConfigChanged event) {
 		if (!AlchBlockerConfig.GROUP.equals(event.getGroup())) return;
-		blockedItems = Text.fromCSV(config.blockedItems()).stream()
-				.map(String::toLowerCase)
-				.collect(Collectors.toSet());
+		itemList = convertToListToSet();
 		if(isAlching) {
 			clientThread.invoke(this::hideBlockedItems);
 		}
@@ -93,12 +92,21 @@ public class AlchBlockerPlugin extends Plugin
 		}
 
 		for (Widget inventoryItem : Objects.requireNonNull(inventory.getChildren())) {
-			if(!inventoryItem.isHidden()) {
-				String itemName = Text.removeTags(inventoryItem.getName()).toLowerCase();
-				if(blockedItems.contains(itemName)) {
-					inventoryItem.setHidden(true);
-					hiddenItems.add(inventoryItem.getItemId());
+			String itemName = Text.removeTags(inventoryItem.getName()).toLowerCase();
+
+			boolean shouldHide = !config.blacklist();
+			for(String blockedItem : itemList) {
+				if(WildcardMatcher.matches(blockedItem, itemName)) {
+					shouldHide = config.blacklist();
+					break;
 				}
+			}
+
+			if(shouldHide) {
+				inventoryItem.setOriginalHeight(0);
+				inventoryItem.setOriginalWidth(0);
+				inventoryItem.revalidate();
+				hiddenItems.add(inventoryItem.getItemId());
 			}
 		}
 	}
@@ -114,11 +122,32 @@ public class AlchBlockerPlugin extends Plugin
 		}
 
 		for (Widget inventoryItem : Objects.requireNonNull(inventory.getChildren())) {
-			if(inventoryItem.isHidden() && hiddenItems.contains(inventoryItem.getItemId())) {
-				inventoryItem.setHidden(false);
+			if(hiddenItems.contains(inventoryItem.getItemId())) {
+				inventoryItem.setOriginalHeight(inventoryWidgetHeight);
+				inventoryItem.setOriginalWidth(inventoryWidgetWidth);
+				inventoryItem.revalidate();
 			}
 		}
 
 		hiddenItems.clear();
+	}
+
+	private Set<String> convertToListToSet() {
+		Set<String> newItems = new HashSet<>();
+		for (String listItem : config.itemList().split("\n")) {
+			if (listItem.trim().equals("")) continue;
+
+			if(listItem.contains(",")) {
+				//For backwards compatibility, supports csv and line separated
+				Set<String> csvSet = Text.fromCSV(listItem).stream()
+						.map(String::toLowerCase)
+						.collect(Collectors.toSet());
+				newItems.addAll(csvSet);
+			} else {
+				newItems.add(listItem.toLowerCase().trim());
+			}
+		}
+
+		return newItems;
 	}
 }
