@@ -39,8 +39,6 @@ public class AlchBlockerPlugin extends Plugin
 	@Inject
 	private ItemManager itemManager;
 
-	final int inventoryWidgetWidth = 36;
-	final int inventoryWidgetHeight = 32;
 	Set<String> itemList = new HashSet<>();
 	Set<Integer> hiddenItems = new HashSet<>();
 	boolean isAlching = false;
@@ -103,9 +101,7 @@ public class AlchBlockerPlugin extends Plugin
 			}
 
 			if(shouldHide) {
-				inventoryItem.setOriginalHeight(0);
-				inventoryItem.setOriginalWidth(0);
-				inventoryItem.revalidate();
+				inventoryItem.setHidden(true);
 				hiddenItems.add(inventoryItem.getItemId());
 			}
 		}
@@ -123,9 +119,7 @@ public class AlchBlockerPlugin extends Plugin
 
 		for (Widget inventoryItem : Objects.requireNonNull(inventory.getChildren())) {
 			if(hiddenItems.contains(inventoryItem.getItemId())) {
-				inventoryItem.setOriginalHeight(inventoryWidgetHeight);
-				inventoryItem.setOriginalWidth(inventoryWidgetWidth);
-				inventoryItem.revalidate();
+				inventoryItem.setHidden(false);
 			}
 		}
 
