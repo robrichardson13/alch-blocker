@@ -6,7 +6,7 @@ Allows you to block items from being alched
 
 ## Preview
 
-![Demo](https://i.imgur.com/Amf3CEZ.gif)
+![Demo](https://i.imgur.com/1kXUiCm.gif)
 
 ## Issues/Suggestions
 
