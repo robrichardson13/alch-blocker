@@ -65,6 +65,7 @@ public class AlchBlockerPlugin extends Plugin
 		if (!AlchBlockerConfig.GROUP.equals(event.getGroup())) return;
 		itemList = convertToListToSet();
 		if(isAlching) {
+			clientThread.invoke(this::showBlockedItems);
 			clientThread.invoke(this::hideBlockedItems);
 		}
 	}
