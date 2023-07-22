@@ -4,6 +4,7 @@ import com.google.inject.Provides;
 import javax.inject.Inject;
 import lombok.extern.slf4j.Slf4j;
 import net.runelite.api.*;
+import net.runelite.api.events.MenuOpened;
 import net.runelite.api.events.MenuOptionClicked;
 import net.runelite.api.events.ScriptPostFired;
 import net.runelite.api.events.WidgetLoaded;
@@ -33,6 +34,9 @@ public class AlchBlockerPlugin extends Plugin
 
 	@Inject
 	private ClientThread clientThread;
+
+	@Inject
+	private ConfigManager configManager;
 
 	@Inject
 	private AlchBlockerConfig config;
@@ -89,6 +93,40 @@ public class AlchBlockerPlugin extends Plugin
 	private void onWidgetLoaded(WidgetLoaded event) {
 		if (event.getGroupId() == WidgetID.EXPLORERS_RING_ALCH_GROUP_ID) {
 			hideBlockedItems();
+		}
+	}
+
+	@Subscribe
+	public void onMenuOpened(final MenuOpened event)
+	{
+		final MenuEntry[] entries = event.getMenuEntries();
+		for (int idx = entries.length - 1; idx >= 0; --idx)
+		{
+			final MenuEntry entry = entries[idx];
+			final Widget w = entry.getWidget();
+
+			if (w != null)
+			{
+				if (entry.getOption().contains("-Alchemy") || (entry.getOption().equals("Cast") && entry.getTarget().contains("Level Alchemy"))) {
+
+					// Item already in block list, no need to add menu item
+					if (hiddenItems.contains(w.getItemId())) {
+						return;
+					}
+
+					final String itemName = w.getName();
+
+					client.createMenuEntry(idx)
+						.setOption("Block Alchemy")
+						.setTarget(itemName)
+						.setType(MenuAction.RUNELITE)
+						.onClick(e ->
+						{
+							configManager.setConfiguration(AlchBlockerConfig.GROUP, "itemList", config.itemList().concat("\n" + Text.removeTags(itemName)));
+							hideBlockedItems();
+						});
+				}
+			}
 		}
 	}
 
