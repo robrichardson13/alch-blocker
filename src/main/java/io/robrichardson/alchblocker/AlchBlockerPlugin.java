@@ -110,20 +110,23 @@ public class AlchBlockerPlugin extends Plugin
 				if (entry.getOption().contains("-Alchemy") || (entry.getOption().equals("Cast") && entry.getTarget().contains("Level Alchemy"))) {
 
 					// Item already in block list, no need to add menu item
-					if (hiddenItems.contains(w.getItemId())) {
+					if (
+						(hiddenItems.contains(w.getItemId()) && config.blacklist()) ||
+						(!hiddenItems.contains(w.getItemId()) && !config.blacklist())
+					) {
 						return;
 					}
 
 					final String itemName = w.getName();
 
 					client.createMenuEntry(idx)
-						.setOption("Block Alchemy")
+						.setOption(config.blacklist() ? "Blacklist Alchemy" : "Whitelist Alchemy")
 						.setTarget(itemName)
 						.setType(MenuAction.RUNELITE)
 						.onClick(e ->
 						{
 							configManager.setConfiguration(AlchBlockerConfig.GROUP, "itemList", config.itemList().concat("\n" + Text.removeTags(itemName)));
-							hideBlockedItems();
+							showBlockedItems();
 						});
 				}
 			}
@@ -163,13 +166,11 @@ public class AlchBlockerPlugin extends Plugin
 		}
 
 		Widget inventory = client.getWidget(WidgetInfo.EXPLORERS_RING_ALCH_INVENTORY);
-		if (inventory != null) {
-			// We don't need to show items again if we are in the explorer ring widget
-			return;
-		}
-		inventory = client.getWidget(WidgetInfo.INVENTORY);
 		if (inventory == null) {
-			return;
+			inventory = client.getWidget(WidgetInfo.INVENTORY);
+			if (inventory == null) {
+				return;
+			}
 		}
 
 		for (Widget inventoryItem : Objects.requireNonNull(inventory.getChildren())) {
@@ -179,6 +180,11 @@ public class AlchBlockerPlugin extends Plugin
 		}
 
 		hiddenItems.clear();
+
+		// If we are still in the explorer ring interface, hide the items again
+		if (WidgetInfo.EXPLORERS_RING_ALCH_INVENTORY.getId() == inventory.getId()) {
+			hideBlockedItems();
+		}
 	}
 
 	private Set<String> convertToListToSet() {
