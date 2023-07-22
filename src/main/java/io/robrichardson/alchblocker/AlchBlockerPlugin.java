@@ -1,5 +1,6 @@
 package io.robrichardson.alchblocker;
 
+import io.robrichardson.alchblocker.config.ListType;
 import com.google.inject.Provides;
 import javax.inject.Inject;
 import lombok.extern.slf4j.Slf4j;
@@ -112,8 +113,8 @@ public class AlchBlockerPlugin extends Plugin
 
 					// Item already in block list, no need to add menu item
 					if (
-						(hiddenItems.contains(w.getItemId()) && config.blacklist()) ||
-						(!hiddenItems.contains(w.getItemId()) && !config.blacklist())
+						(hiddenItems.contains(w.getItemId()) && config.listType() == ListType.BLACKLIST) ||
+						(!hiddenItems.contains(w.getItemId()) && config.listType() == ListType.WHITELIST)
 					) {
 						return;
 					}
@@ -121,7 +122,7 @@ public class AlchBlockerPlugin extends Plugin
 					final String itemName = w.getName();
 
 					client.createMenuEntry(idx)
-						.setOption(config.blacklist() ? "Blacklist Alchemy" : "Whitelist Alchemy")
+						.setOption(config.listType() == ListType.BLACKLIST ? "Blacklist Alchemy" : "Whitelist Alchemy")
 						.setTarget(itemName)
 						.setType(MenuAction.RUNELITE)
 						.onClick(e ->
@@ -146,10 +147,10 @@ public class AlchBlockerPlugin extends Plugin
 		for (Widget inventoryItem : Objects.requireNonNull(inventory.getChildren())) {
 			String itemName = Text.removeTags(inventoryItem.getName()).toLowerCase();
 
-			boolean isBlacklist = !config.blacklist();
+			boolean isBlacklist = config.listType() != ListType.BLACKLIST;
 			for(String blockedItem : itemList) {
 				if(WildcardMatcher.matches(blockedItem, itemName)) {
-					isBlacklist = config.blacklist();
+					isBlacklist = config.listType() == ListType.BLACKLIST;
 					break;
 				}
 			}
