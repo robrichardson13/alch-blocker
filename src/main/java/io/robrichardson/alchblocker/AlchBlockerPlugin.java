@@ -1,6 +1,7 @@
 package io.robrichardson.alchblocker;
 
 import io.robrichardson.alchblocker.config.ListType;
+import io.robrichardson.alchblocker.config.DisplayType;
 import com.google.inject.Provides;
 import javax.inject.Inject;
 import lombok.extern.slf4j.Slf4j;
@@ -161,7 +162,11 @@ public class AlchBlockerPlugin extends Plugin
 			}
 
 			if(isBlacklist) {
-				inventoryItem.setOpacity(220);
+				if (config.displayType() == DisplayType.TRANSPARENT || WidgetInfo.EXPLORERS_RING_ALCH_INVENTORY.getId() == inventory.getId()) {
+					inventoryItem.setOpacity(220);
+				} else {
+					inventoryItem.setHidden(true);
+				}
 				hiddenItems.add(inventoryItem.getItemId());
 			}
 		}
@@ -182,7 +187,11 @@ public class AlchBlockerPlugin extends Plugin
 
 		for (Widget inventoryItem : Objects.requireNonNull(inventory.getChildren())) {
 			if(hiddenItems.contains(inventoryItem.getItemId())) {
-				inventoryItem.setOpacity(0);
+				if (config.displayType() == DisplayType.TRANSPARENT || WidgetInfo.EXPLORERS_RING_ALCH_INVENTORY.getId() == inventory.getId()) {
+					inventoryItem.setOpacity(0);
+				} else {
+					inventoryItem.setHidden(false);
+				}
 			}
 		}
 

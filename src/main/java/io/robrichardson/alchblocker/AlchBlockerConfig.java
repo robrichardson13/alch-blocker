@@ -1,5 +1,6 @@
 package io.robrichardson.alchblocker;
 
+import io.robrichardson.alchblocker.config.DisplayType;
 import io.robrichardson.alchblocker.config.ListType;
 import net.runelite.client.config.Config;
 import net.runelite.client.config.ConfigGroup;
@@ -22,10 +23,21 @@ public interface AlchBlockerConfig extends Config
 	}
 
 	@ConfigItem(
+		keyName = "displayType",
+		name = "Display type",
+		description = "How do you want the blacklisted items shown. (explorer ring only supports transparent)",
+		position = 1
+	)
+	default DisplayType displayType()
+	{
+		return DisplayType.TRANSPARENT;
+	}
+
+	@ConfigItem(
 		keyName = "listType",
 		name = "List type",
-		description = "Blacklist will block the items in the list below from being alched.\nWhitelist only allows the items in the list below to be alched.",
-		position = 1
+		description = "Blacklist will block the items in the list below from being alched. Whitelist only allows the items in the list below to be alched.",
+		position = 2
 	)
 	default ListType listType()
 	{
@@ -36,7 +48,7 @@ public interface AlchBlockerConfig extends Config
 		keyName = "itemList",
 		name = "Item list",
 		description = "Configures the list of items to block or unblock from being alched. Format: (item), (item). Example: fire rune, prayer potion*",
-		position = 2
+		position = 3
 	)
 	default String itemList()
 	{
