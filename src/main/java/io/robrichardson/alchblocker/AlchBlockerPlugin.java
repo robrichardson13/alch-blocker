@@ -163,7 +163,7 @@ public class AlchBlockerPlugin extends Plugin
 
 			if(isBlacklist) {
 				if (config.displayType() == DisplayType.TRANSPARENT || WidgetInfo.EXPLORERS_RING_ALCH_INVENTORY.getId() == inventory.getId()) {
-					inventoryItem.setOpacity(220);
+					inventoryItem.setOpacity(200);
 				} else {
 					inventoryItem.setHidden(true);
 				}
