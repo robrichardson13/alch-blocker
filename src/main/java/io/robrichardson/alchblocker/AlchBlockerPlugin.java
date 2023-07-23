@@ -101,6 +101,11 @@ public class AlchBlockerPlugin extends Plugin
 	@Subscribe
 	public void onMenuOpened(final MenuOpened event)
 	{
+		// If the user has decided to disable the context menu, no need to process further
+		if (!config.contextMenuEnabled()) {
+			return;
+		}
+
 		final MenuEntry[] entries = event.getMenuEntries();
 		for (int idx = entries.length - 1; idx >= 0; --idx)
 		{

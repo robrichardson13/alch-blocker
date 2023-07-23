@@ -11,24 +11,35 @@ public interface AlchBlockerConfig extends Config
 	String GROUP = "AlchBlocker";
 
 	@ConfigItem(
-			keyName = "itemList",
-			name = "Item List",
-			description = "Configures the list of items to block or unblock from being alched. Format: (item), (item). Example: fire rune, prayer potion*",
-			position = 1
+		keyName = "contextMenuEnabled",
+		name = "Context menu add item",
+		description = "Allow right clicking an item to add to the list.",
+		position = 0
 	)
-	default String itemList()
+	default boolean contextMenuEnabled()
 	{
-		return "*Rune Pouch\n*(1)\n*(2)\n*(3)\n*(4)\n";
+		return true;
 	}
 
 	@ConfigItem(
 		keyName = "listType",
-		name = "List Type",
-		description = "Blacklist will block the items in the list below from being alched.\nWhitelist only allows the items in the list below to be alched .",
-		position = 0
+		name = "List type",
+		description = "Blacklist will block the items in the list below from being alched.\nWhitelist only allows the items in the list below to be alched.",
+		position = 1
 	)
 	default ListType listType()
 	{
 		return ListType.BLACKLIST;
+	}
+
+	@ConfigItem(
+		keyName = "itemList",
+		name = "Item list",
+		description = "Configures the list of items to block or unblock from being alched. Format: (item), (item). Example: fire rune, prayer potion*",
+		position = 2
+	)
+	default String itemList()
+	{
+		return "*Rune Pouch\n*(1)\n*(2)\n*(3)\n*(4)\n";
 	}
 }
