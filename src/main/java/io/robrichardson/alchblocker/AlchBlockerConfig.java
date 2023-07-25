@@ -1,5 +1,7 @@
 package io.robrichardson.alchblocker;
 
+import io.robrichardson.alchblocker.config.DisplayType;
+import io.robrichardson.alchblocker.config.ListType;
 import net.runelite.client.config.Config;
 import net.runelite.client.config.ConfigGroup;
 import net.runelite.client.config.ConfigItem;
@@ -10,22 +12,46 @@ public interface AlchBlockerConfig extends Config
 	String GROUP = "AlchBlocker";
 
 	@ConfigItem(
-			keyName = "itemList",
-			name = "Items",
-			description = "Configures the list of items to block or unblock from being alched. Format: (item), (item). Example: fire rune, prayer potion*"
+		keyName = "contextMenuEnabled",
+		name = "Context menu add item",
+		description = "Allow right clicking an item to add to the list.",
+		position = 0
 	)
-	default String itemList()
+	default boolean contextMenuEnabled()
 	{
-		return "";
+		return true;
 	}
 
 	@ConfigItem(
-			keyName = "blacklist",
-			name = "Blacklist",
-			description = "If turned on, it will block the items in the list below. If turned off it only allows the items to be alched in the list below."
+		keyName = "displayType",
+		name = "Display type",
+		description = "How do you want the blacklisted items shown. (explorer ring only supports transparent)",
+		position = 1
 	)
-	default boolean blacklist()
+	default DisplayType displayType()
 	{
-		return true;
+		return DisplayType.TRANSPARENT;
+	}
+
+	@ConfigItem(
+		keyName = "listType",
+		name = "List type",
+		description = "Blacklist will block the items in the list below from being alched. Whitelist only allows the items in the list below to be alched.",
+		position = 2
+	)
+	default ListType listType()
+	{
+		return ListType.BLACKLIST;
+	}
+
+	@ConfigItem(
+		keyName = "itemList",
+		name = "Item list",
+		description = "Configures the list of items to block or unblock from being alched. Format: (item), (item). Example: fire rune, prayer potion*",
+		position = 3
+	)
+	default String itemList()
+	{
+		return "*Rune Pouch\n*(1)\n*(2)\n*(3)\n*(4)\n";
 	}
 }
