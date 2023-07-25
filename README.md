@@ -9,6 +9,8 @@ Allows you to block items from being alched
 ![Demo](https://i.imgur.com/1kXUiCm.gif)
 
 ## Issues/Suggestions
+### Known Issues
+This plugin conflicts with: [Instant Inventory](https://github.com/elgbar/instant-inventory)
 
 Found a bug? Have a suggestion?
 
