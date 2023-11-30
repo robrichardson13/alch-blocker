@@ -1,11 +1,21 @@
 package io.robrichardson.alchblocker;
 
-import io.robrichardson.alchblocker.config.ListType;
-import io.robrichardson.alchblocker.config.DisplayType;
-import com.google.inject.Provides;
+import java.util.HashSet;
+import java.util.Objects;
+import java.util.Set;
+import java.util.stream.Collectors;
+
 import javax.inject.Inject;
+
+import com.google.inject.Provides;
+
+import io.robrichardson.alchblocker.config.DisplayType;
+import io.robrichardson.alchblocker.config.ListType;
 import lombok.extern.slf4j.Slf4j;
-import net.runelite.api.*;
+import net.runelite.api.Client;
+import net.runelite.api.MenuAction;
+import net.runelite.api.MenuEntry;
+import net.runelite.api.ScriptID;
 import net.runelite.api.events.MenuOpened;
 import net.runelite.api.events.MenuOptionClicked;
 import net.runelite.api.events.ScriptPostFired;
@@ -21,9 +31,6 @@ import net.runelite.client.plugins.Plugin;
 import net.runelite.client.plugins.PluginDescriptor;
 import net.runelite.client.util.Text;
 import net.runelite.client.util.WildcardMatcher;
-
-import java.util.*;
-import java.util.stream.Collectors;
 
 @Slf4j
 @PluginDescriptor(
@@ -75,7 +82,7 @@ public class AlchBlockerPlugin extends Plugin
 	@Subscribe()
 	public void onMenuOptionClicked(MenuOptionClicked event) {
 		String menuTarget = Text.removeTags(event.getMenuTarget());
-		isAlching = event.getMenuOption().contains("Alchemy") || (event.getMenuOption().equals("Cast") && menuTarget.contains("Level Alchemy"));
+		isAlching = event.getMenuOption().contains("Alchemy") || (event.getMenuOption().equals("Cast") && (Objects.equals(menuTarget, "High Level Alchemy") || Objects.equals(menuTarget, "Low Level Alchemy")));
 		// If item in our list of blocked items, don't allow the action
 		if (isAlching && hiddenItems.contains(event.getItemId())) {
 			event.consume();
