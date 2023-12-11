@@ -20,9 +20,9 @@ import net.runelite.api.events.MenuOpened;
 import net.runelite.api.events.MenuOptionClicked;
 import net.runelite.api.events.ScriptPostFired;
 import net.runelite.api.events.WidgetLoaded;
+import net.runelite.api.widgets.ComponentID;
+import net.runelite.api.widgets.InterfaceID;
 import net.runelite.api.widgets.Widget;
-import net.runelite.api.widgets.WidgetID;
-import net.runelite.api.widgets.WidgetInfo;
 import net.runelite.client.callback.ClientThread;
 import net.runelite.client.config.ConfigManager;
 import net.runelite.client.eventbus.Subscribe;
@@ -101,7 +101,7 @@ public class AlchBlockerPlugin extends Plugin
 
 	@Subscribe
 	private void onWidgetLoaded(WidgetLoaded event) {
-		if (event.getGroupId() == WidgetID.EXPLORERS_RING_ALCH_GROUP_ID) {
+		if (event.getGroupId() == InterfaceID.EXPLORERS_RING) {
 			hideBlockedItems();
 		}
 	}
@@ -123,7 +123,6 @@ public class AlchBlockerPlugin extends Plugin
 			if (w != null)
 			{
 				if (entry.getOption().contains("-Alchemy") || (entry.getOption().equals("Cast") && entry.getTarget().contains("Level Alchemy"))) {
-
 					// Item already in block list, no need to add menu item
 					if (
 						(hiddenItems.contains(w.getItemId()) && config.listType() == ListType.BLACKLIST) ||
@@ -149,9 +148,9 @@ public class AlchBlockerPlugin extends Plugin
 	}
 
 	private void hideBlockedItems() {
-		Widget inventory = client.getWidget(WidgetInfo.EXPLORERS_RING_ALCH_INVENTORY);
+		Widget inventory = client.getWidget(ComponentID.EXPLORERS_RING_INVENTORY);
 		if (inventory == null) {
-			inventory = client.getWidget(WidgetInfo.INVENTORY);
+			inventory = client.getWidget(ComponentID.INVENTORY_CONTAINER);
 			if (inventory == null) {
 				return;
 			}
@@ -169,7 +168,7 @@ public class AlchBlockerPlugin extends Plugin
 			}
 
 			if(isBlacklist) {
-				if (config.displayType() == DisplayType.TRANSPARENT || WidgetInfo.EXPLORERS_RING_ALCH_INVENTORY.getId() == inventory.getId()) {
+				if (config.displayType() == DisplayType.TRANSPARENT || ComponentID.EXPLORERS_RING_INVENTORY == inventory.getId()) {
 					inventoryItem.setOpacity(200);
 				} else {
 					inventoryItem.setHidden(true);
@@ -184,9 +183,9 @@ public class AlchBlockerPlugin extends Plugin
 			return;
 		}
 
-		Widget inventory = client.getWidget(WidgetInfo.EXPLORERS_RING_ALCH_INVENTORY);
+		Widget inventory = client.getWidget(ComponentID.EXPLORERS_RING_INVENTORY);
 		if (inventory == null) {
-			inventory = client.getWidget(WidgetInfo.INVENTORY);
+			inventory = client.getWidget(ComponentID.INVENTORY_CONTAINER);
 			if (inventory == null) {
 				return;
 			}
@@ -194,7 +193,7 @@ public class AlchBlockerPlugin extends Plugin
 
 		for (Widget inventoryItem : Objects.requireNonNull(inventory.getChildren())) {
 			if(hiddenItems.contains(inventoryItem.getItemId())) {
-				if (config.displayType() == DisplayType.TRANSPARENT || WidgetInfo.EXPLORERS_RING_ALCH_INVENTORY.getId() == inventory.getId()) {
+				if (config.displayType() == DisplayType.TRANSPARENT || ComponentID.EXPLORERS_RING_INVENTORY == inventory.getId()) {
 					inventoryItem.setOpacity(0);
 				} else {
 					inventoryItem.setHidden(false);
@@ -205,7 +204,7 @@ public class AlchBlockerPlugin extends Plugin
 		hiddenItems.clear();
 
 		// If we are still in the explorer ring interface, hide the items again
-		if (WidgetInfo.EXPLORERS_RING_ALCH_INVENTORY.getId() == inventory.getId()) {
+		if (ComponentID.EXPLORERS_RING_INVENTORY == inventory.getId()) {
 			hideBlockedItems();
 		}
 	}
