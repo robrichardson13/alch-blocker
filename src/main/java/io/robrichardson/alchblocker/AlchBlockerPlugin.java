@@ -82,12 +82,14 @@ public class AlchBlockerPlugin extends Plugin
 	@Subscribe()
 	public void onMenuOptionClicked(MenuOptionClicked event) {
 		String menuTarget = Text.removeTags(event.getMenuTarget());
-		isAlching = event.getMenuOption().contains("Alchemy") || (event.getMenuOption().equals("Cast") && (Objects.equals(menuTarget, "High Level Alchemy") || Objects.equals(menuTarget, "Low Level Alchemy")));
-		// If item in our list of blocked items, don't allow the action
-		if (isAlching && hiddenItems.contains(event.getItemId())) {
+		// did you just click an alchemy spell (and thus need to have items in inventory hidden)
+		isAlching = event.getMenuOption().equals("Cast") && (Objects.equals(menuTarget, "High Level Alchemy") || Objects.equals(menuTarget, "Low Level Alchemy"));
+		// did you just click an item to try to alch it ("High-Alchemy <item>" from explorer's ring, "Cast High Level Alchemy -> <item>" from spell)
+		boolean tryingToAlch = event.getMenuOption().contains("-Alchemy") || (event.getMenuOption().equals("Cast") && menuTarget.contains("Alchemy ->"));
+		if (tryingToAlch && hiddenItems.contains(event.getItemId())) {
 			event.consume();
 		}
-		if(!isAlching) {
+		else if(!isAlching) {
 			showBlockedItems();
 		}
 	}
