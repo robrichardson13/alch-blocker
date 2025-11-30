@@ -1,6 +1,10 @@
 package io.robrichardson.alchblocker;
 
+import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.stream.Collectors;
@@ -34,8 +38,7 @@ import net.runelite.client.util.WildcardMatcher;
 
 @Slf4j
 @PluginDescriptor(
-		name = "Alch Blocker",
-		conflicts = "Instant Inventory"
+		name = "Alch Blocker"
 )
 public class AlchBlockerPlugin extends Plugin
 {
@@ -51,13 +54,15 @@ public class AlchBlockerPlugin extends Plugin
 	@Inject
 	private AlchBlockerConfig config;
 
-	Set<String> itemList = new HashSet<>();
+	Set<String> exactMatches = new HashSet<>();
+	List<String> wildcardPatterns = new ArrayList<>();
+	Map<Integer, Boolean> blockedItemCache = new HashMap<>();
 	Set<Integer> hiddenItems = new HashSet<>();
 	boolean isAlching = false;
 
 	@Override
 	protected void startUp() throws Exception {
-		itemList = convertToListToSet();
+		parseItemList();
 	}
 
 	@Override
@@ -73,7 +78,8 @@ public class AlchBlockerPlugin extends Plugin
 	@Subscribe
 	public void onConfigChanged(ConfigChanged event) {
 		if (!AlchBlockerConfig.GROUP.equals(event.getGroup())) return;
-		itemList = convertToListToSet();
+		parseItemList();
+		blockedItemCache.clear();
 		if(isAlching) {
 			clientThread.invoke(this::showBlockedItems);
 			clientThread.invoke(this::hideBlockedItems);
@@ -83,8 +89,10 @@ public class AlchBlockerPlugin extends Plugin
 	@Subscribe()
 	public void onMenuOptionClicked(MenuOptionClicked event) {
 		String menuTarget = Text.removeTags(event.getMenuTarget());
+		// Normalize non-breaking spaces (char 160) to regular spaces - some plugins use NBSP
+		String normalizedTarget = menuTarget.replace('\u00A0', ' ');
 		// did you just click an alchemy spell (and thus need to have items in inventory hidden)
-		isAlching = event.getMenuOption().equals("Cast") && (Objects.equals(menuTarget, "High Level Alchemy") || Objects.equals(menuTarget, "Low Level Alchemy"));
+		isAlching = event.getMenuOption().equals("Cast") && (normalizedTarget.contains("High Level Alchemy") || normalizedTarget.contains("Low Level Alchemy"));
 		// did you just click an item to try to alch it ("High-Alchemy <item>" from explorer's ring, "Cast High Level Alchemy -> <item>" from spell)
 		boolean tryingToAlch = event.getMenuOption().contains("-Alchemy") || (event.getMenuOption().equals("Cast") && menuTarget.contains("Alchemy ->"));
 		if (tryingToAlch && hiddenItems.contains(event.getItemId())) {
@@ -160,25 +168,42 @@ public class AlchBlockerPlugin extends Plugin
 		}
 
 		for (Widget inventoryItem : Objects.requireNonNull(inventory.getChildren())) {
-			String itemName = Text.removeTags(inventoryItem.getName()).toLowerCase();
+			int itemId = inventoryItem.getItemId();
+			boolean shouldBlock;
 
-			boolean isBlacklist = config.listType() != ListType.BLACKLIST;
-			for(String blockedItem : itemList) {
-				if(WildcardMatcher.matches(blockedItem, itemName)) {
-					isBlacklist = config.listType() == ListType.BLACKLIST;
-					break;
-				}
+			// Check cache first for O(1) lookup
+			if (blockedItemCache.containsKey(itemId)) {
+				shouldBlock = blockedItemCache.get(itemId);
+			} else {
+				String itemName = Text.removeTags(inventoryItem.getName()).toLowerCase();
+				boolean matchesPattern = isItemInBlockList(itemName);
+				shouldBlock = (config.listType() == ListType.BLACKLIST) == matchesPattern;
+				blockedItemCache.put(itemId, shouldBlock);
 			}
 
-			if(isBlacklist) {
+			if (shouldBlock) {
 				if (config.displayType() == DisplayType.TRANSPARENT || ComponentID.EXPLORERS_RING_INVENTORY == inventory.getId()) {
 					inventoryItem.setOpacity(200);
 				} else {
 					inventoryItem.setHidden(true);
 				}
-				hiddenItems.add(inventoryItem.getItemId());
+				hiddenItems.add(itemId);
 			}
 		}
+	}
+
+	private boolean isItemInBlockList(String itemName) {
+		// O(1) lookup for exact matches
+		if (exactMatches.contains(itemName)) {
+			return true;
+		}
+		// Only iterate wildcard patterns (typically much smaller)
+		for (String pattern : wildcardPatterns) {
+			if (WildcardMatcher.matches(pattern, itemName)) {
+				return true;
+			}
+		}
+		return false;
 	}
 
 	private void showBlockedItems() {
@@ -212,22 +237,32 @@ public class AlchBlockerPlugin extends Plugin
 		}
 	}
 
-	private Set<String> convertToListToSet() {
-		Set<String> newItems = new HashSet<>();
-		for (String listItem : config.itemList().split("\n")) {
-			if (listItem.trim().equals("")) continue;
+	private void parseItemList() {
+		exactMatches.clear();
+		wildcardPatterns.clear();
 
-			if(listItem.contains(",")) {
-				//For backwards compatibility, supports csv and line separated
+		for (String listItem : config.itemList().split("\n")) {
+			if (listItem.trim().isEmpty()) continue;
+
+			if (listItem.contains(",")) {
+				// For backwards compatibility, supports csv and line separated
 				Set<String> csvSet = Text.fromCSV(listItem).stream()
 						.map(String::toLowerCase)
 						.collect(Collectors.toSet());
-				newItems.addAll(csvSet);
+				for (String item : csvSet) {
+					addToAppropriateCollection(item);
+				}
 			} else {
-				newItems.add(listItem.toLowerCase().trim());
+				addToAppropriateCollection(listItem.toLowerCase().trim());
 			}
 		}
+	}
 
-		return newItems;
+	private void addToAppropriateCollection(String item) {
+		if (item.contains("*")) {
+			wildcardPatterns.add(item);
+		} else {
+			exactMatches.add(item);
+		}
 	}
 }
