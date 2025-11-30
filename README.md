@@ -1,4 +1,9 @@
-# Alch Blocker [![Plugin Installs](https://img.shields.io/endpoint?url=https://i.pluginhub.info/shields/installs/plugin/alch-blocker)](https://runelite.net/plugin-hub/robrichardson13)
+# Alch Blocker
+
+
+![image](https://img.shields.io/endpoint?url=https://api.runelite.net/pluginhub/shields/rank/plugin/alch-blocker)
+![image](https://img.shields.io/endpoint?url=https://api.runelite.net/pluginhub/shields/installs/plugin/alch-blocker)
+
 ##### A plugin for [RuneLite](https://runelite.net/)
 
 
