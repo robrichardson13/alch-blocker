@@ -15,7 +15,9 @@ Allows you to block items from being alched
 
 ## Issues/Suggestions
 ### Known Issues
-This plugin conflicts with: [Instant Inventory](https://github.com/elgbar/instant-inventory)
+This plugin conflicts with:
+- [Instant Inventory](https://github.com/elgbar/instant-inventory)
+- Remaining Casts - can be used together if you disable "Show on menu tooltip" in Remaining Casts settings ([#30](https://github.com/robrichardson13/alch-blocker/issues/30))
 
 Found a bug? Have a suggestion?
 

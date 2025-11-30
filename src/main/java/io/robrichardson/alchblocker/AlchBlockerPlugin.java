@@ -34,7 +34,8 @@ import net.runelite.client.util.WildcardMatcher;
 
 @Slf4j
 @PluginDescriptor(
-		name = "Alch Blocker"
+		name = "Alch Blocker",
+		conflicts = {"Instant Inventory", "Remaining Casts"}
 )
 public class AlchBlockerPlugin extends Plugin
 {
