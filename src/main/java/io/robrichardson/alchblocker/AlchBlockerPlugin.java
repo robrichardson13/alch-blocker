@@ -156,7 +156,7 @@ public class AlchBlockerPlugin extends Plugin
 			final MenuEntry entry = entries[idx];
 			final Widget w = entry.getWidget();
 
-			if (w != null)
+			if (w != null && w.getItemId() > -1)
 			{
 				if (entry.getOption().contains("-Alchemy") || (entry.getOption().equals("Cast") && entry.getTarget().contains("Level Alchemy"))) {
 					// Item already in block list, no need to add menu item
