@@ -25,6 +25,7 @@ import net.runelite.api.events.MenuOptionClicked;
 import net.runelite.api.events.ScriptPostFired;
 import net.runelite.api.events.WidgetClosed;
 import net.runelite.api.events.WidgetLoaded;
+import net.runelite.api.gameval.InterfaceID.MagicSpellbook;
 import net.runelite.api.widgets.ComponentID;
 import net.runelite.api.widgets.InterfaceID;
 import net.runelite.api.widgets.Widget;
@@ -60,11 +61,8 @@ public class AlchBlockerPlugin extends Plugin
 	Map<Integer, Boolean> blockedItemCache = new HashMap<>();
 	Set<Integer> hiddenItems = new HashSet<>();
 
-	// Widget IDs for alchemy spells (from InterfaceID.MagicSpellbook)
-	// This really should be grabbed dynamically...
-	// Updated the hardcoded IDs to account for the minigame teleport spell addition
-	private static final int HIGH_ALCHEMY_WIDGET_ID = 0x00da_002d; // was 0x00da_002c
-	private static final int LOW_ALCHEMY_WIDGET_ID  = 0x00da_0016; // was 0x00da_0015
+	private static final int HIGH_ALCHEMY_WIDGET_ID = MagicSpellbook.HIGH_ALCHEMY;
+	private static final int LOW_ALCHEMY_WIDGET_ID  = MagicSpellbook.LOW_ALCHEMY;
 
 	@Override
 	protected void startUp() throws Exception {
