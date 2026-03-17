@@ -61,8 +61,10 @@ public class AlchBlockerPlugin extends Plugin
 	Set<Integer> hiddenItems = new HashSet<>();
 
 	// Widget IDs for alchemy spells (from InterfaceID.MagicSpellbook)
-	private static final int HIGH_ALCHEMY_WIDGET_ID = 0x00da_002c;
-	private static final int LOW_ALCHEMY_WIDGET_ID = 0x00da_0015;
+	// This really should be grabbed dynamically...
+	// Updated the hardcoded IDs to account for the minigame teleport spell addition
+	private static final int HIGH_ALCHEMY_WIDGET_ID = 0x00da_002d; // was 0x00da_002c
+	private static final int LOW_ALCHEMY_WIDGET_ID  = 0x00da_0016; // was 0x00da_0015
 
 	@Override
 	protected void startUp() throws Exception {
