@@ -345,110 +345,6 @@ public class AlchBlockerPluginBehaviourTest
 		return new MenuOptionClicked(alchEntry(slot, "Cast", "<col=00ff00>High Level Alchemy</col> -> <col=ff9040>x</col>"));
 	}
 
-	/** Issue #36: a "!" prefix line is an exception that overrides a wildcard pattern. */
-	@Test
-	public void exclusionOverridesWildcardInBlacklistMode()
-	{
-		when(config.blacklist()).thenReturn("*(4)\n!prayer potion(4)");
-		plugin.onConfigChanged(configChanged("blacklist"));
-
-		Slot prayerPotion = new Slot(InterfaceID.Inventory.ITEMS, 2434, "Prayer potion(4)");
-		Slot superCombat = new Slot(InterfaceID.Inventory.ITEMS, 12695, "Super combat potion(4)");
-		inventoryOf(prayerPotion, superCombat);
-
-		selectSpell(highAlchSpell);
-		redrawInventory();
-
-		assertEquals("prayer potion excluded, must stay visible", 0, prayerPotion.opacity);
-		assertFalse(prayerPotion.hidden);
-		assertEquals("super combat potion still matched by wildcard", 200, superCombat.opacity);
-
-		MenuOptionClicked prayerClick = alchClick(prayerPotion);
-		plugin.onMenuOptionClicked(prayerClick);
-		assertFalse("excluded item's alch click must not be consumed", prayerClick.isConsumed());
-
-		MenuOptionClicked combatClick = alchClick(superCombat);
-		plugin.onMenuOptionClicked(combatClick);
-		assertTrue("blocked item's alch click must be consumed", combatClick.isConsumed());
-	}
-
-	/**
-	 * Card #4 decision: a "!" line means "always allow this item" in BOTH list modes - it is not
-	 * "excluded from list matching". In WHITELIST mode a "!" line must still permit alching, even
-	 * though the plain wildcard pattern it overrides would otherwise have matched the item too.
-	 */
-	@Test
-	public void exclusionOverridesWildcardInWhitelistMode()
-	{
-		when(config.blacklist()).thenReturn("");
-		when(config.whitelist()).thenReturn("*(4)\n!prayer potion(4)");
-		when(config.unlistedItemPolicy()).thenReturn(UnlistedItemPolicy.BLOCK);
-		plugin.onConfigChanged(configChanged("whitelist"));
-
-		Slot prayerPotion = new Slot(InterfaceID.Inventory.ITEMS, 2434, "Prayer potion(4)");
-		Slot superCombat = new Slot(InterfaceID.Inventory.ITEMS, 12695, "Super combat potion(4)");
-		inventoryOf(prayerPotion, superCombat);
-
-		selectSpell(highAlchSpell);
-		redrawInventory();
-
-		assertEquals("a \"!\" line always allows, even in WHITELIST mode", 0, prayerPotion.opacity);
-		assertEquals("super combat potion is whitelisted via the wildcard, so it stays alchable", 0, superCombat.opacity);
-	}
-
-	/** Issue #36: "!" exclusions support wildcards themselves and apply regardless of line order. */
-	@Test
-	public void exclusionSupportsWildcardsAndIsOrderIndependent()
-	{
-		Slot prayerPotion = new Slot(InterfaceID.Inventory.ITEMS, 2434, "Prayer potion(4)");
-		Slot superCombat = new Slot(InterfaceID.Inventory.ITEMS, 12695, "Super combat potion(4)");
-
-		when(config.blacklist()).thenReturn("*potion*\n!*prayer*");
-		plugin.onConfigChanged(configChanged("blacklist"));
-		inventoryOf(prayerPotion, superCombat);
-		selectSpell(highAlchSpell);
-		redrawInventory();
-		assertEquals(0, prayerPotion.opacity);
-		assertEquals(200, superCombat.opacity);
-
-		// Reversed order, fresh slots so the cache/hidden state from the pass above can't leak in
-		Slot prayerPotion2 = new Slot(InterfaceID.Inventory.ITEMS, 2434, "Prayer potion(4)");
-		Slot superCombat2 = new Slot(InterfaceID.Inventory.ITEMS, 12695, "Super combat potion(4)");
-		when(config.blacklist()).thenReturn("!*prayer*\n*potion*");
-		plugin.onConfigChanged(configChanged("blacklist"));
-		inventoryOf(prayerPotion2, superCombat2);
-		redrawInventory();
-		assertEquals(0, prayerPotion2.opacity);
-		assertEquals(200, superCombat2.opacity);
-	}
-
-	/** Issue #36: parsing handles a CSV exception, a bare "!" line, and whitespace around the name. */
-	@Test
-	public void exclusionParsingHandlesCsvBareBangAndWhitespace()
-	{
-		when(config.blacklist()).thenReturn("*(4), !prayer potion(4)\n!\n! coins \n");
-		plugin.onConfigChanged(configChanged("blacklist"));
-
-		Slot prayerPotion = new Slot(InterfaceID.Inventory.ITEMS, 2434, "Prayer potion(4)");
-		Slot superCombat = new Slot(InterfaceID.Inventory.ITEMS, 12695, "Super combat potion(4)");
-		inventoryOf(prayerPotion, superCombat);
-		selectSpell(highAlchSpell);
-		redrawInventory();
-		assertEquals("CSV exception applies", 0, prayerPotion.opacity);
-		assertEquals(200, superCombat.opacity);
-
-		// "coins" was excluded (with surrounding whitespace trimmed) and the default Rune pouch
-		// pattern must still be intact (regression guard on parseItemLists' default blacklist).
-		when(config.blacklist()).thenReturn("*Rune Pouch\n! coins ");
-		plugin.onConfigChanged(configChanged("blacklist"));
-		Slot runePouch = new Slot(InterfaceID.Inventory.ITEMS, 27281, "Rune pouch");
-		Slot coinsSlot = new Slot(InterfaceID.Inventory.ITEMS, COINS, "Coins");
-		inventoryOf(runePouch, coinsSlot);
-		redrawInventory();
-		assertEquals(200, runePouch.opacity);
-		assertEquals("coins excluded", 0, coinsSlot.opacity);
-	}
-
 	private ConfigChanged configChanged(String key)
 	{
 		ConfigChanged change = new ConfigChanged();
@@ -602,9 +498,7 @@ public class AlchBlockerPluginBehaviourTest
 	/**
 	 * Issue #18 / card #9 decision: option 3 applies the same move-between-lists action the context
 	 * menu would (card #9 spec section 5.3) - for a plain blacklist block, that moves the item to the
-	 * whitelist rather than writing a "!" line (which is reserved for helper-rule blocks). Final review
-	 * finding #4: the option's wording must match that write, so a plain list block reads "whitelist",
-	 * not "always allow" (which is reserved for the helper-rule-only case that actually writes a "!").
+	 * whitelist, worded "whitelist" to match.
 	 */
 	@Test
 	public void confirmOptionThreeWhitelistsAndIsWordedWhitelistInBlacklistMode()
@@ -640,12 +534,12 @@ public class AlchBlockerPluginBehaviourTest
 	}
 
 	/**
-	 * Final review finding #4: for an item blocked only by a helper rule, option 3 actually writes a
-	 * "!" line (card #9 spec section 3) - so it must be worded "always allow", not "whitelist", since a
-	 * plain whitelist line would be overridden by the same helper rule the next redraw.
+	 * The whitelist now ranks above helper rules, so "always allow" from the CONFIRM prompt no longer
+	 * needs a special "!" line - for an item blocked only by a helper rule, option 3 just writes a
+	 * plain whitelist line, the same as any other block.
 	 */
 	@Test
-	public void confirmOptionThreeWritesABangLineAndIsWordedAlwaysAllowForAHelperRuleOnlyBlock()
+	public void alwaysAllowFromConfirmWritesWhitelistLine()
 	{
 		when(config.blockedItemAction()).thenReturn(BlockedItemAction.CONFIRM);
 		when(config.notedItemsOnly()).thenReturn(true);
@@ -654,9 +548,9 @@ public class AlchBlockerPluginBehaviourTest
 
 		plugin.onMenuOptionClicked(alchClick(bones));
 		verify(chatboxPanelManager).openTextMenuInput(anyString());
-		optionCallback("always allow").run();
+		optionCallback("whitelist").run();
 
-		verify(configManager).setConfiguration(eq(AlchBlockerConfig.GROUP), eq("whitelist"), contains("!Bones"));
+		verify(configManager).setConfiguration(eq(AlchBlockerConfig.GROUP), eq("whitelist"), contains("Bones"));
 	}
 
 	/** Rob's ask: shift-click an inventory item to add its raw name to the item list. */
@@ -852,14 +746,14 @@ public class AlchBlockerPluginBehaviourTest
 	{
 		when(config.notedItemsOnly()).thenReturn(true);
 
-		// Whitelisted but un-noted: still blocked, the list can't override the gate.
+		// Whitelisted but un-noted: the whitelist ranks above the helper rule now, so it's allowed.
 		when(config.blacklist()).thenReturn("");
 		when(config.whitelist()).thenReturn("bones");
 		when(config.unlistedItemPolicy()).thenReturn(UnlistedItemPolicy.BLOCK);
 		plugin.onConfigChanged(configChanged("whitelist"));
 		selectSpell(highAlchSpell);
 		redrawInventory();
-		assertEquals(200, bones.opacity);
+		assertEquals(0, bones.opacity);
 
 		// Blacklisted, but a noted item: still blocked, the gate doesn't override the list.
 		when(config.whitelist()).thenReturn("");
@@ -887,29 +781,8 @@ public class AlchBlockerPluginBehaviourTest
 		assertFalse(bones.hidden);
 	}
 
-	/**
-	 * Amendment recorded on card #7 (designer2, following card #8): a "!" exclusion line is the one
-	 * thing that overrides a helper rule as well as the list, so notedItemsOnly is not an unescapable
-	 * dead end.
-	 */
 	@Test
-	public void bangExceptionOverridesTheNotedRule()
-	{
-		when(config.notedItemsOnly()).thenReturn(true);
-		when(config.blacklist()).thenReturn("coins\n!bones");
-		plugin.onConfigChanged(configChanged("blacklist"));
-		selectSpell(highAlchSpell);
-		redrawInventory();
-
-		assertEquals("a ! exclusion overrides the noted-only rule too", 0, bones.opacity);
-		assertFalse(bones.hidden);
-		MenuOptionClicked click = alchClick(bones);
-		plugin.onMenuOptionClicked(click);
-		assertFalse(click.isConsumed());
-	}
-
-	@Test
-	public void contextMenuOffersAlwaysAllowForAnItemBlockedOnlyByTheNotedRule()
+	public void contextMenuOffersWhitelistForAnItemBlockedOnlyByTheNotedRule()
 	{
 		when(config.notedItemsOnly()).thenReturn(true);
 		selectSpell(highAlchSpell);
@@ -922,17 +795,17 @@ public class AlchBlockerPluginBehaviourTest
 		opened.setMenuEntries(new MenuEntry[]{alchEntry(bones, "Cast", "High Level Alchemy -> Bones")});
 		plugin.onMenuOpened(opened);
 
-		verify(created).setOption(contains("Always allow"));
+		verify(created).setOption("Whitelist Alchemy");
 
 		ArgumentCaptor<java.util.function.Consumer<MenuEntry>> onClick = ArgumentCaptor.forClass(java.util.function.Consumer.class);
 		verify(created).onClick(onClick.capture());
 		onClick.getValue().accept(created);
 
-		verify(configManager).setConfiguration(eq(AlchBlockerConfig.GROUP), eq("whitelist"), contains("!Bones"));
+		verify(configManager).setConfiguration(eq(AlchBlockerConfig.GROUP), eq("whitelist"), contains("Bones"));
 	}
 
 	@Test
-	public void shiftClickOffersAlwaysAllowForAnItemBlockedOnlyByTheNotedRule()
+	public void shiftClickOffersWhitelistForAnItemBlockedOnlyByTheNotedRule()
 	{
 		when(config.notedItemsOnly()).thenReturn(true);
 		when(config.shiftClickAddsToList()).thenReturn(true);
@@ -944,12 +817,12 @@ public class AlchBlockerPluginBehaviourTest
 		when(menu.createMenuEntry(-1)).thenReturn(created);
 		postMenuSort(itemMenuEntry(bones.widget));
 
-		verify(created).setOption(contains("Always allow"));
+		verify(created).setOption("Whitelist Alchemy");
 		ArgumentCaptor<java.util.function.Consumer<MenuEntry>> onClick = ArgumentCaptor.forClass(java.util.function.Consumer.class);
 		verify(created).onClick(onClick.capture());
 		onClick.getValue().accept(created);
 
-		verify(configManager).setConfiguration(eq(AlchBlockerConfig.GROUP), eq("whitelist"), contains("!Bones"));
+		verify(configManager).setConfiguration(eq(AlchBlockerConfig.GROUP), eq("whitelist"), contains("Bones"));
 	}
 
 	/**
@@ -972,15 +845,11 @@ public class AlchBlockerPluginBehaviourTest
 	}
 
 	/**
-	 * Final review finding #3: the old {@code !isBlockedByListOnly} clause labelled this item
-	 * "Whitelist Alchemy", which is a dead first click - moving the item to the whitelist does nothing
-	 * because helper rules sit above the whitelist in the precedence table, so the item stays dimmed
-	 * and the user needs a second click to get the "Always allow" option that actually works. Since a
-	 * "!" line is now an unconditional always-allow (card #9), that clause no longer serves a purpose:
-	 * a helper-rule block should always offer the one-click "Always allow Alchemy" fix.
+	 * The whitelist ranks above helper rules, so "Whitelist Alchemy" is a working one-click fix even
+	 * when the blacklist/unlisted policy also blocks the item.
 	 */
 	@Test
-	public void helperRuleOffersAWorkingAlwaysAllowEvenWhenTheListAlsoBlocksTheItem()
+	public void helperRuleOffersAWorkingWhitelistEntryEvenWhenTheListAlsoBlocksTheItem()
 	{
 		when(config.blacklist()).thenReturn("");
 		when(config.whitelist()).thenReturn("");
@@ -997,7 +866,7 @@ public class AlchBlockerPluginBehaviourTest
 		opened.setMenuEntries(new MenuEntry[]{alchEntry(bones, "Cast", "High Level Alchemy -> Bones")});
 		plugin.onMenuOpened(opened);
 
-		verify(created).setOption("Always allow Alchemy");
+		verify(created).setOption("Whitelist Alchemy");
 
 		// And the click must actually work in one shot, not require a second click.
 		ArgumentCaptor<java.util.function.Consumer<MenuEntry>> onClick = ArgumentCaptor.forClass(java.util.function.Consumer.class);
@@ -1013,43 +882,25 @@ public class AlchBlockerPluginBehaviourTest
 	}
 
 	/**
-	 * Review finding #2 (card #4) and the binding decision: a "!" line means "always allow" in BOTH
-	 * list modes, not "excluded from list matching". "Always allow Alchemy" in WHITELIST mode plus
-	 * notedItemsOnly must actually make the item alchable, not leave it silently blocked.
+	 * Card #16 decision: the whitelist now ranks above helper rules unconditionally - a whitelisted
+	 * item is never blocked by a helper rule, in either list mode.
 	 */
 	@Test
-	public void alwaysAllowActuallyUnblocksTheItemInWhitelistModeWithNotedItemsOnly()
+	public void whitelistedItemIgnoresNotedItemsOnlyRule()
 	{
 		when(config.notedItemsOnly()).thenReturn(true);
-		// Bones is already whitelisted (the list itself would allow it), so it is blocked ONLY by
-		// the noted-only rule - this is what makes "Always allow Alchemy" the offered entry.
 		when(config.blacklist()).thenReturn("");
 		when(config.whitelist()).thenReturn("bones");
 		when(config.unlistedItemPolicy()).thenReturn(UnlistedItemPolicy.BLOCK);
 		plugin.onConfigChanged(configChanged("whitelist"));
 		selectSpell(highAlchSpell);
 		redrawInventory();
-		assertEquals(200, bones.opacity);
 
-		MenuEntry created = mock(MenuEntry.class, withSettings().defaultAnswer(Mockito.RETURNS_SELF));
-		when(menu.createMenuEntry(anyInt())).thenReturn(created);
-		MenuOpened opened = new MenuOpened();
-		opened.setMenuEntries(new MenuEntry[]{alchEntry(bones, "Cast", "High Level Alchemy -> Bones")});
-		plugin.onMenuOpened(opened);
-		verify(created).setOption(contains("Always allow"));
-
-		ArgumentCaptor<java.util.function.Consumer<MenuEntry>> onClick = ArgumentCaptor.forClass(java.util.function.Consumer.class);
-		verify(created).onClick(onClick.capture());
-		ArgumentCaptor<String> written = ArgumentCaptor.forClass(String.class);
-		onClick.getValue().accept(created);
-		verify(configManager).setConfiguration(eq(AlchBlockerConfig.GROUP), eq("whitelist"), written.capture());
-
-		when(config.whitelist()).thenReturn(written.getValue());
-		plugin.onConfigChanged(configChanged("whitelist"));
-		redrawInventory();
-
-		assertEquals("the item must now actually be alchable", 0, bones.opacity);
+		assertEquals("a whitelisted item must not be blocked by the noted-only helper rule", 0, bones.opacity);
 		assertFalse(bones.hidden);
+		MenuOptionClicked click = alchClick(bones);
+		plugin.onMenuOptionClicked(click);
+		assertFalse(click.isConsumed());
 	}
 
 	/**
@@ -1198,9 +1049,12 @@ public class AlchBlockerPluginBehaviourTest
 		assertTrue(click.isConsumed());
 	}
 
-	/** A helper rule beats even an exact whitelist match - it is a block on top of the list, not under it. */
+	/**
+	 * Card #16 decision: the whitelist now beats a helper rule - it is a block on top of the list,
+	 * but under the whitelist.
+	 */
 	@Test
-	public void helperRuleBlocksEvenAWhitelistedName()
+	public void whitelistedItemIgnoresHelperRules()
 	{
 		when(config.blacklist()).thenReturn("");
 		when(config.whitelist()).thenReturn("bones");
@@ -1211,25 +1065,29 @@ public class AlchBlockerPluginBehaviourTest
 		selectSpell(highAlchSpell);
 		redrawInventory();
 
-		assertEquals("blockUntradeable must beat an exact whitelist match", 200, bones.opacity);
-	}
-
-	/** Card #8 decision: a "!" exclusion line overrides a helper rule too, not just the list. */
-	@Test
-	public void bangExceptionOverridesHelperRule()
-	{
-		when(config.blockUntradeable()).thenReturn(true);
-		when(config.blacklist()).thenReturn("coins\n!bones");
-		stubItem(BONES, 1000, 600, 1000, false, false);
-		plugin.onConfigChanged(configChanged("blacklist"));
-		selectSpell(highAlchSpell);
-		redrawInventory();
-
-		assertEquals("a ! exclusion overrides a helper rule too", 0, bones.opacity);
+		assertEquals("an exact whitelist match must beat blockUntradeable", 0, bones.opacity);
 		assertFalse(bones.hidden);
 		MenuOptionClicked click = alchClick(bones);
 		plugin.onMenuOptionClicked(click);
 		assertFalse(click.isConsumed());
+	}
+
+	/** A helper rule still blocks an item that is on neither list. */
+	@Test
+	public void helperRuleStillBlocksUnlistedItem()
+	{
+		when(config.blockUntradeable()).thenReturn(true);
+		when(config.blacklist()).thenReturn("");
+		when(config.whitelist()).thenReturn("");
+		stubItem(BONES, 1000, 600, 1000, false, false);
+		plugin.onConfigChanged(configChanged("blockUntradeable"));
+		selectSpell(highAlchSpell);
+		redrawInventory();
+
+		assertEquals("bones is on neither list, so blockUntradeable still blocks it", 200, bones.opacity);
+		MenuOptionClicked click = alchClick(bones);
+		plugin.onMenuOptionClicked(click);
+		assertTrue(click.isConsumed());
 	}
 
 	/**
@@ -1513,28 +1371,6 @@ public class AlchBlockerPluginBehaviourTest
 		assertEquals("super combat potion is still blacklisted", 200, superCombat.opacity);
 	}
 
-	/**
-	 * Precedence rows 2 and 3b: a helper rule blocks a plain whitelist entry (row 3b above row 4), but
-	 * a "!" line - pooled from either box - still always allows it (row 2 above row 3b).
-	 */
-	@Test
-	public void helperRuleBlocksAWhitelistedItemButABangLineDoesNot() {
-		when(config.notedItemsOnly()).thenReturn(true);
-		when(config.blacklist()).thenReturn("");
-		when(config.whitelist()).thenReturn("bones");
-		when(config.unlistedItemPolicy()).thenReturn(UnlistedItemPolicy.ALLOW);
-		plugin.onConfigChanged(configChanged("whitelist"));
-		selectSpell(highAlchSpell);
-		redrawInventory();
-		assertEquals("un-noted whitelisted bones is still blocked by the noted-only helper rule", 200, bones.opacity);
-
-		// The "!" line lives in the blacklist box this time - pooled exclusions don't care which box.
-		when(config.blacklist()).thenReturn("!bones");
-		plugin.onConfigChanged(configChanged("blacklist"));
-		redrawInventory();
-		assertEquals("a ! line in either box always allows, beating the helper rule too", 0, bones.opacity);
-	}
-
 	/** The context menu's move-to-whitelist action drops the exact blacklist line it came from. */
 	@Test
 	public void movingAnItemToTheWhitelistRemovesItsBlacklistLine() {
@@ -1557,68 +1393,6 @@ public class AlchBlockerPluginBehaviourTest
 		verify(configManager).setConfiguration(eq(AlchBlockerConfig.GROUP), eq("blacklist"),
 			argThat(written -> !written.toLowerCase().contains("coins")));
 		verify(configManager).setConfiguration(eq(AlchBlockerConfig.GROUP), eq("whitelist"), contains("Coins"));
-	}
-
-	/**
-	 * Final review finding #2: before the fix, a "!" line could never be removed through the plugin's
-	 * own UI. {@code primaryListActionLabel} didn't consult the exclusion sets, so an excluded item was
-	 * offered "Blacklist Alchemy" - a silent, self-repeating no-op that appends a dead duplicate line on
-	 * every click and never changes the item's state. The fix must offer a real remove action instead.
-	 */
-	@Test
-	public void aBangLineCanBeRemovedViaTheContextMenu()
-	{
-		when(config.blacklist()).thenReturn("!bones");
-		plugin.onConfigChanged(configChanged("blacklist"));
-		selectSpell(highAlchSpell);
-		redrawInventory();
-		assertEquals("bones is always-allowed via the ! line", 0, bones.opacity);
-
-		MenuEntry created = mock(MenuEntry.class, withSettings().defaultAnswer(Mockito.RETURNS_SELF));
-		when(menu.createMenuEntry(anyInt())).thenReturn(created);
-		MenuOpened opened = new MenuOpened();
-		opened.setMenuEntries(new MenuEntry[]{alchEntry(bones, "Cast", "High Level Alchemy -> Bones")});
-		plugin.onMenuOpened(opened);
-		// Must not be the no-op "Blacklist Alchemy" - the item is already excluded.
-		verify(created, never()).setOption("Blacklist Alchemy");
-		verify(created).setOption("Remove always-allow");
-
-		ArgumentCaptor<java.util.function.Consumer<MenuEntry>> onClick = ArgumentCaptor.forClass(java.util.function.Consumer.class);
-		verify(created).onClick(onClick.capture());
-		ArgumentCaptor<String> written = ArgumentCaptor.forClass(String.class);
-		onClick.getValue().accept(created);
-		verify(configManager).setConfiguration(eq(AlchBlockerConfig.GROUP), eq("blacklist"), written.capture());
-		assertFalse("the ! line must actually be gone, not duplicated", written.getValue().toLowerCase().contains("!bones"));
-	}
-
-	/**
-	 * Final review finding #2: a "!" line can live in either box (pooling), so removal must check
-	 * both - here the line lives in the whitelist box while the blacklist independently blocks the item.
-	 */
-	@Test
-	public void aBangLineInTheWhitelistBoxCanBeRemovedEvenWhenTheBlacklistAlsoMatches()
-	{
-		when(config.blacklist()).thenReturn("bones");
-		when(config.whitelist()).thenReturn("!bones");
-		plugin.onConfigChanged(configChanged("whitelist"));
-		selectSpell(highAlchSpell);
-		redrawInventory();
-		assertEquals("the ! line always allows even though the blacklist also matches", 0, bones.opacity);
-
-		MenuEntry created = mock(MenuEntry.class, withSettings().defaultAnswer(Mockito.RETURNS_SELF));
-		when(menu.createMenuEntry(anyInt())).thenReturn(created);
-		MenuOpened opened = new MenuOpened();
-		opened.setMenuEntries(new MenuEntry[]{alchEntry(bones, "Cast", "High Level Alchemy -> Bones")});
-		plugin.onMenuOpened(opened);
-		verify(created).setOption("Remove always-allow");
-
-		ArgumentCaptor<java.util.function.Consumer<MenuEntry>> onClick = ArgumentCaptor.forClass(java.util.function.Consumer.class);
-		verify(created).onClick(onClick.capture());
-		ArgumentCaptor<String> written = ArgumentCaptor.forClass(String.class);
-		onClick.getValue().accept(created);
-		verify(configManager).setConfiguration(eq(AlchBlockerConfig.GROUP), eq("whitelist"), written.capture());
-		assertFalse("the ! line must be gone from the whitelist box it actually lived in",
-			written.getValue().toLowerCase().contains("!bones"));
 	}
 
 	/**

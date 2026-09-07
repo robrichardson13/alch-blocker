@@ -17,7 +17,7 @@ public interface AlchBlockerConfig extends Config
 	@ConfigItem(
 		keyName = "contextMenuEnabled",
 		name = "Context menu add item",
-		description = "Adds a Blacklist/Whitelist Alchemy (or Always allow / Remove from whitelist) option when you right-click an inventory item while an alchemy spell is selected.",
+		description = "Adds a Blacklist/Whitelist Alchemy (or Remove from whitelist) option when you right-click an inventory item while an alchemy spell is selected.",
 		position = 0
 	)
 	default boolean contextMenuEnabled()
@@ -60,7 +60,7 @@ public interface AlchBlockerConfig extends Config
 
 	@ConfigSection(
 		name = "Item lists",
-		description = "One item per line; * is a wildcard. The whitelist beats the blacklist. A line starting with ! beats everything, including helper rules - it always allows that item no matter which box it's in.",
+		description = "One item per line; * is a wildcard. The whitelist beats everything else, including helper rules.",
 		position = 4
 	)
 	String itemLists = "itemLists";
@@ -68,7 +68,7 @@ public interface AlchBlockerConfig extends Config
 	@ConfigItem(
 		keyName = "blacklist",
 		name = "Blacklist",
-		description = "Items here cannot be alched. One per line, * wildcards allowed. Prefix a line with ! to always allow that item instead, overriding everything.",
+		description = "Items here cannot be alched. One per line, * wildcards allowed. The whitelist overrides this.",
 		section = "itemLists",
 		position = 5
 	)
@@ -80,7 +80,7 @@ public interface AlchBlockerConfig extends Config
 	@ConfigItem(
 		keyName = "whitelist",
 		name = "Whitelist",
-		description = "Items here can be alched even if the blacklist blocks them. One per line, * wildcards allowed. Prefix a line with ! to always allow that item, overriding everything.",
+		description = "Items here can always be alched, overriding the blacklist and every helper rule. One per line, * wildcards allowed.",
 		section = "itemLists",
 		position = 6
 	)
@@ -91,7 +91,7 @@ public interface AlchBlockerConfig extends Config
 
 	@ConfigSection(
 		name = "Helper rules",
-		description = "Block whole kinds of item without listing them by name. These apply on top of your list above, in both Blacklist and Whitelist mode - the only thing that overrides them is a ! line in the item list. Mage Training Arena items are always exempt. All off by default.",
+		description = "Block whole kinds of item without listing them by name. These apply on top of your list above - the only thing that overrides them is whitelisting the item. Mage Training Arena items are always exempt. All off by default.",
 		position = 7,
 		closedByDefault = true
 	)
@@ -100,7 +100,7 @@ public interface AlchBlockerConfig extends Config
 	@ConfigItem(
 		keyName = "notedItemsOnly",
 		name = "Only allow noted items",
-		description = "Blocks every un-noted item. Prefix a line with ! to always allow one item.",
+		description = "Blocks every un-noted item. Whitelist an item to allow it anyway.",
 		section = "helperRules",
 		position = 8
 	)

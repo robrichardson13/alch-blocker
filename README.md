@@ -20,13 +20,9 @@ the natural place to carve out exceptions. An "Unlisted items" setting decides w
 item that's on neither list: Allow (only the blacklist blocks) or Block (only the whitelist can
 alch). Right-click an inventory item while an alchemy spell is selected for a single context menu
 option that always does the one useful thing for that item's current state -
-"Blacklist Alchemy"/"Whitelist Alchemy" moves it to the right list, "Remove from whitelist" takes
-it off, "Always allow Alchemy" writes a `!` line for an item blocked only by a helper rule, and
-"Remove always-allow" removes that `!` line again - or hold shift and left-click it to do the same
-thing without the menu.
-
-A `!` prefix on a line in either box always allows that item, overriding both lists and every
-helper rule below.
+"Blacklist Alchemy"/"Whitelist Alchemy" moves it to the right list (including for an item blocked
+only by a helper rule, since whitelisting it is enough to allow it), and "Remove from whitelist"
+takes it off again - or hold shift and left-click it to do the same thing without the menu.
 
 If you're upgrading from an older version, your existing item list and list type are converted
 automatically the first time the new version runs - nothing to do on your end.
@@ -42,9 +38,8 @@ can block whole kinds of item without listing them by name, on top of both lists
 - **Block items worth more on the GE** (with a configurable required profit and whether to count
   rune cost)
 
-A `!` prefix on a list line always allows that item, overriding both lists and every helper rule.
-Mage Training Arena reward items are always exempt from helper rules so the minigame keeps
-working.
+Whitelisting an item always allows it, overriding the blacklist and every helper rule. Mage
+Training Arena reward items are always exempt from helper rules so the minigame keeps working.
 
 ## Issues/Suggestions
 
