@@ -2,7 +2,7 @@ package io.robrichardson.alchblocker;
 
 import io.robrichardson.alchblocker.config.BlockedItemAction;
 import io.robrichardson.alchblocker.config.DisplayType;
-import io.robrichardson.alchblocker.config.ListType;
+import io.robrichardson.alchblocker.config.UnlistedItemPolicy;
 import net.runelite.client.config.Config;
 import net.runelite.client.config.ConfigGroup;
 import net.runelite.client.config.ConfigItem;
@@ -17,7 +17,7 @@ public interface AlchBlockerConfig extends Config
 	@ConfigItem(
 		keyName = "contextMenuEnabled",
 		name = "Context menu add item",
-		description = "Adds a Blacklist/Whitelist Alchemy option when you right-click an inventory item while an alchemy spell is selected.",
+		description = "Adds a Blacklist/Whitelist Alchemy (or Always allow / Remove from whitelist) option when you right-click an inventory item while an alchemy spell is selected.",
 		position = 0
 	)
 	default boolean contextMenuEnabled()
@@ -37,14 +37,14 @@ public interface AlchBlockerConfig extends Config
 	}
 
 	@ConfigItem(
-		keyName = "listType",
-		name = "List type",
-		description = "Blacklist will block the items in the list below from being alched. Whitelist only allows the items in the list below to be alched.",
+		keyName = "unlistedItemPolicy",
+		name = "Items on neither list",
+		description = "What happens to an item that is on neither list. Allow: only the blacklist blocks (the old Blacklist mode). Block: only the whitelist can alch (the old Whitelist mode).",
 		position = 2
 	)
-	default ListType listType()
+	default UnlistedItemPolicy unlistedItemPolicy()
 	{
-		return ListType.BLACKLIST;
+		return UnlistedItemPolicy.ALLOW;
 	}
 
 	@ConfigItem(
@@ -69,15 +69,35 @@ public interface AlchBlockerConfig extends Config
 		return false;
 	}
 
+	@ConfigSection(
+		name = "Item lists",
+		description = "One item per line; * is a wildcard. The whitelist beats the blacklist. A line starting with ! beats everything, including helper rules - it always allows that item no matter which box it's in.",
+		position = 5
+	)
+	String itemLists = "itemLists";
+
 	@ConfigItem(
-		keyName = "itemList",
-		name = "Item list",
-		description = "Configures the list of items to block or unblock from being alched. Format: (item), (item). Example: fire rune, prayer potion*. Prefix a line with ! to always allow that item, overriding every other line in both Blacklist and Whitelist mode, e.g. *(4) then !prayer potion(4).",
+		keyName = "blacklist",
+		name = "Blacklist",
+		description = "Items here cannot be alched. One per line, * wildcards allowed. Prefix a line with ! to always allow that item instead, overriding everything.",
+		section = "itemLists",
 		position = 6
 	)
-	default String itemList()
+	default String blacklist()
 	{
 		return "*Rune Pouch\n*(1)\n*(2)\n*(3)\n*(4)\n";
+	}
+
+	@ConfigItem(
+		keyName = "whitelist",
+		name = "Whitelist",
+		description = "Items here can be alched even if the blacklist blocks them. One per line, * wildcards allowed. Prefix a line with ! to always allow that item, overriding everything.",
+		section = "itemLists",
+		position = 7
+	)
+	default String whitelist()
+	{
+		return "";
 	}
 
 	@ConfigSection(

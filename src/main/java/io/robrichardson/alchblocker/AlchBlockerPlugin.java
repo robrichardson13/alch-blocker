@@ -17,6 +17,7 @@ import com.google.inject.Provides;
 import io.robrichardson.alchblocker.config.BlockedItemAction;
 import io.robrichardson.alchblocker.config.DisplayType;
 import io.robrichardson.alchblocker.config.ListType;
+import io.robrichardson.alchblocker.config.UnlistedItemPolicy;
 import lombok.extern.slf4j.Slf4j;
 import net.runelite.api.ChatMessageType;
 import net.runelite.api.Client;
@@ -42,6 +43,7 @@ import net.runelite.client.callback.ClientThread;
 import net.runelite.client.config.ConfigManager;
 import net.runelite.client.eventbus.Subscribe;
 import net.runelite.client.events.ConfigChanged;
+import net.runelite.client.events.ProfileChanged;
 import net.runelite.client.game.ItemManager;
 import net.runelite.client.game.chatbox.ChatboxPanelManager;
 import net.runelite.client.game.chatbox.ChatboxTextMenuInput;
@@ -74,8 +76,11 @@ public class AlchBlockerPlugin extends Plugin
 	@Inject
 	private ItemManager itemManager;
 
-	Set<String> exactMatches = new HashSet<>();
-	List<String> wildcardPatterns = new ArrayList<>();
+	Set<String> blacklistExact = new HashSet<>();
+	List<String> blacklistWildcards = new ArrayList<>();
+	Set<String> whitelistExact = new HashSet<>();
+	List<String> whitelistWildcards = new ArrayList<>();
+	/** "!" lines pooled from BOTH boxes (card #9 spec): which box a ! line lives in doesn't matter. */
 	Set<String> exactExclusions = new HashSet<>();
 	List<String> wildcardExclusions = new ArrayList<>();
 	/**
@@ -85,7 +90,8 @@ public class AlchBlockerPlugin extends Plugin
 	 * invalidate on (card #8 spec). The list match itself is genuinely constant per item id, since
 	 * names are, so this is still worth caching.
 	 */
-	Map<Integer, Boolean> listVerdictCache = new HashMap<>();
+	Map<Integer, Boolean> blacklistVerdictCache = new HashMap<>();
+	Map<Integer, Boolean> whitelistVerdictCache = new HashMap<>();
 	Set<Integer> hiddenItems = new HashSet<>();
 
 	private static final int HIGH_ALCHEMY_WIDGET_ID = InterfaceID.MagicSpellbook.HIGH_ALCHEMY;
@@ -122,9 +128,72 @@ public class AlchBlockerPlugin extends Plugin
 	/** Ticks left before the rate-limited fallback chat message may fire again. */
 	private int blockedMessageCooldownTicks = 0;
 
+	private static final int CONFIG_VERSION = 2;
+	private static final String DEFAULT_LEGACY_LIST = "*Rune Pouch\n*(1)\n*(2)\n*(3)\n*(4)\n";
+	private static final String BLACKLIST_KEY = "blacklist";
+	private static final String WHITELIST_KEY = "whitelist";
+	/**
+	 * True while {@link #migrate()} is writing config keys. Each {@code setConfiguration} call fires
+	 * a synchronous {@code ConfigChanged}, so without this guard {@code onConfigChanged} would
+	 * reparse the item lists up to three times mid-migration (card #9 spec trap #3).
+	 */
+	private boolean migrating = false;
+
 	@Override
 	protected void startUp() throws Exception {
-		parseItemList();
+		// migrate() must run before parseItemLists() - it may rewrite blacklist/whitelist/policy.
+		migrate();
+		parseItemLists();
+	}
+
+	/**
+	 * One-shot, profile-scoped config migration from the single itemList/listType keys to the
+	 * two-list model (card #9 spec). Idempotent on a stored {@code configVersion} marker rather than
+	 * a boolean field, since RuneLite config is profile-scoped and each profile must be migrated
+	 * independently the first time it becomes active - called from both {@link #startUp()} and
+	 * {@link #onProfileChanged}.
+	 * <p>
+	 * Phase 1 (this release): write the new keys and stamp {@code configVersion = 2}, but leave the
+	 * legacy {@code itemList}/{@code listType} keys in place so a rollback to 1.9 still works. Phase 2
+	 * (a release later) removes the legacy keys once nobody is relying on them.
+	 */
+	private void migrate() {
+		Integer version = configManager.getConfiguration(AlchBlockerConfig.GROUP, "configVersion", Integer.class);
+		if (version != null && version >= CONFIG_VERSION) {
+			// retireLegacyKeys();   // phase 2 only
+			return;
+		}
+
+		migrating = true;
+		try {
+			String legacyList = configManager.getConfiguration(AlchBlockerConfig.GROUP, "itemList");
+			ListType legacyType = configManager.getConfiguration(AlchBlockerConfig.GROUP, "listType", ListType.class);
+
+			if (legacyList != null || legacyType != null) {
+				// A key is only stored once the user has changed it from the default - null means
+				// "was on the default", not "empty" (card #9 spec trap #2).
+				ListType type = legacyType != null ? legacyType : ListType.BLACKLIST;
+				String list = legacyList != null ? legacyList : DEFAULT_LEGACY_LIST;
+
+				if (type == ListType.WHITELIST) {
+					configManager.setConfiguration(AlchBlockerConfig.GROUP, WHITELIST_KEY, list);
+					// blacklist's default is the rune pouch/dose list, so a migrated whitelist user
+					// left on that default would suddenly block items they never asked to block
+					// (card #9 spec trap #1) - it must be explicitly cleared.
+					configManager.setConfiguration(AlchBlockerConfig.GROUP, BLACKLIST_KEY, "");
+					configManager.setConfiguration(AlchBlockerConfig.GROUP, "unlistedItemPolicy", UnlistedItemPolicy.BLOCK);
+				} else {
+					configManager.setConfiguration(AlchBlockerConfig.GROUP, BLACKLIST_KEY, list);
+					configManager.setConfiguration(AlchBlockerConfig.GROUP, "unlistedItemPolicy", UnlistedItemPolicy.ALLOW);
+					// whitelist is left unset; its default is already "".
+				}
+			}
+
+			configManager.setConfiguration(AlchBlockerConfig.GROUP, "configVersion", CONFIG_VERSION);
+			// Legacy keys are deliberately left in place - phase 2 removes them.
+		} finally {
+			migrating = false;
+		}
 	}
 
 	@Override
@@ -147,9 +216,11 @@ public class AlchBlockerPlugin extends Plugin
 
 	@Subscribe
 	public void onConfigChanged(ConfigChanged event) {
+		if (migrating) return;
 		if (!AlchBlockerConfig.GROUP.equals(event.getGroup())) return;
-		parseItemList();
-		listVerdictCache.clear();
+		parseItemLists();
+		blacklistVerdictCache.clear();
+		whitelistVerdictCache.clear();
 		clearAllowance();
 		// Restore everything first so a display type change mid-alch doesn't leave items
 		// stuck with the old display type's opacity/hidden state (issue #17), then re-apply.
@@ -157,6 +228,18 @@ public class AlchBlockerPlugin extends Plugin
 			showBlockedItems();
 			updateItemVisibility();
 		});
+	}
+
+	/**
+	 * RuneLite config keys are profile-scoped, so a user who switches to a profile that has never
+	 * been migrated must get migrated at that moment - a startUp-only migration would silently
+	 * corrupt that profile's behaviour (card #9 spec).
+	 */
+	@Subscribe
+	public void onProfileChanged(ProfileChanged event) {
+		migrate();
+		parseItemLists();
+		clientThread.invokeAtTickEnd(this::refreshItemVisibility);
 	}
 
 	@Subscribe()
@@ -234,6 +317,7 @@ public class AlchBlockerPlugin extends Plugin
 		final String name = w != null && w.getName() != null
 			? Text.removeTags(w.getName()).replace(' ', ' ').trim()
 			: "this item";
+		final boolean ringPowered = w != null && w.getId() == EXPLORERS_RING_INVENTORY_WIDGET_ID;
 		promptOpen = true;
 
 		ChatboxTextMenuInput input = chatboxPanelManager
@@ -241,7 +325,7 @@ public class AlchBlockerPlugin extends Plugin
 			.option("1. No, don't cast", () -> { })
 			.option("2. Yes, cast this once", () -> grantAllowance(itemId))
 			.option("3. Yes, and always allow " + name, () -> {
-				permanentlyAllow(name);
+				applyPrimaryListAction(itemId, name, ringPowered);
 				grantAllowance(itemId);
 			});
 
@@ -268,14 +352,6 @@ public class AlchBlockerPlugin extends Plugin
 	private void refreshItemVisibility() {
 		showBlockedItems();
 		updateItemVisibility();
-	}
-
-	/** Edits the item list so this item is always alchable from now on. */
-	private void permanentlyAllow(String name) {
-		// A "!" line means "always allow this item" in BOTH list modes (card #4 decision), not
-		// "excluded from list matching" - it beats the list and any helper rule (e.g. notedItemsOnly)
-		// regardless of listType, so it is the only line that guarantees the item becomes alchable.
-		configManager.setConfiguration(AlchBlockerConfig.GROUP, "itemList", config.itemList().concat("\n!" + name));
 	}
 
 	private void sendBlockedChatMessage() {
@@ -398,44 +474,72 @@ public class AlchBlockerPlugin extends Plugin
 		}
 
 		final String itemName = w.getName();
-		final String plainName = Text.removeTags(itemName).replace(' ', ' ').trim();
-		// Issue #44 / card #8: same reasoning as onMenuOpened - a helper-rule-only block needs a "!"
-		// exception, not a normal list edit that would silently do nothing.
-		if (isBlockedOnlyByHelperRules(w.getItemId(), plainName, container == EXPLORERS_RING_INVENTORY_WIDGET_ID)) {
-			client.getMenu().createMenuEntry(-1)
-				.setOption("Always allow Alchemy")
-				.setTarget(itemName)
-				.setType(MenuAction.RUNELITE)
-				.onClick(e -> addToItemList("!" + plainName));
+		final String plainName = Text.removeTags(itemName).replace('\u00A0', ' ').trim();
+		final boolean ringPowered = container == EXPLORERS_RING_INVENTORY_WIDGET_ID;
+
+		client.getMenu().createMenuEntry(-1)
+			.setOption(primaryListActionLabel(w.getItemId(), plainName, ringPowered))
+			.setTarget(itemName)
+			.setType(MenuAction.RUNELITE)
+			.onClick(e -> applyPrimaryListAction(w.getItemId(), plainName, ringPowered));
+	}
+
+	/**
+	 * The single move-between-lists action for this item, and its menu label, per the card #9 spec
+	 * table (section 5.1): every state has exactly one useful action, so the context menu and
+	 * shift-click always offer the same one thing, computed the same way.
+	 */
+	private String primaryListActionLabel(int itemId, String plainName, boolean ringPowered) {
+		if (isBlockedOnlyByHelperRules(itemId, plainName, ringPowered)) {
+			return "Always allow Alchemy";
+		}
+		if (whitelistExact.contains(plainName.toLowerCase())) {
+			return "Remove from whitelist";
+		}
+		return isBlockedByListOnly(itemId, plainName) ? "Whitelist Alchemy" : "Blacklist Alchemy";
+	}
+
+	/**
+	 * Applies the action described by {@link #primaryListActionLabel}. Used by the context menu entry,
+	 * shift-click, and the CONFIRM prompt's "always allow" option (card #9 spec section 5).
+	 */
+	private void applyPrimaryListAction(int itemId, String plainName, boolean ringPowered) {
+		if (isBlockedOnlyByHelperRules(itemId, plainName, ringPowered)) {
+			// The plugin's own "!" writes always go to the whitelist box (card #9 spec section 3).
+			addToList(WHITELIST_KEY, "!" + plainName);
 			return;
 		}
 
-		final boolean listed = exactMatches.contains(plainName.toLowerCase());
+		String lower = plainName.toLowerCase();
+		if (whitelistExact.contains(lower)) {
+			removeFromList(WHITELIST_KEY, plainName);
+			return;
+		}
 
-		client.getMenu().createMenuEntry(-1)
-			.setOption(listed ? "Remove from Alch list" : (config.listType() == ListType.BLACKLIST ? "Blacklist Alchemy" : "Whitelist Alchemy"))
-			.setTarget(itemName)
-			.setType(MenuAction.RUNELITE)
-			.onClick(e -> {
-				if (listed) {
-					removeFromItemList(plainName);
-				} else {
-					addToItemList(plainName);
-				}
-			});
+		if (isBlockedByListOnly(itemId, plainName)) {
+			// Blocked by an exact/wildcard blacklist line, or by the unlisted policy: move it to the
+			// whitelist. removeFromList no-ops when the blacklist only matched via a wildcard - a
+			// wildcard pattern is never edited (card #9 spec section 5.4).
+			removeFromList(BLACKLIST_KEY, plainName);
+			addToList(WHITELIST_KEY, plainName);
+		} else {
+			addToList(BLACKLIST_KEY, plainName);
+		}
 	}
 
-	/** Appends the item's exact name to the item list - never a wildcard. */
-	private void addToItemList(String plainName) {
-		configManager.setConfiguration(AlchBlockerConfig.GROUP, "itemList", config.itemList().concat("\n" + plainName));
+	/** Appends the item's exact name to the given list ("blacklist" or "whitelist") - never a wildcard. */
+	private void addToList(String key, String plainName) {
+		String current = BLACKLIST_KEY.equals(key) ? config.blacklist() : config.whitelist();
+		configManager.setConfiguration(AlchBlockerConfig.GROUP, key, current.concat("\n" + plainName));
 		showBlockedItems();
 	}
 
-	/** Drops the line(s) matching the item's exact name; wildcard patterns are never touched. */
-	private void removeFromItemList(String plainName) {
+	/** Drops the line(s) matching the item's exact name from the given list; wildcard patterns are never touched. */
+	private void removeFromList(String key, String plainName) {
+		String current = BLACKLIST_KEY.equals(key) ? config.blacklist() : config.whitelist();
 		String lower = plainName.toLowerCase();
 		StringBuilder result = new StringBuilder();
-		for (String line : config.itemList().split("\n")) {
+		for (String line : current.split("\n")) {
 			String trimmed = line.trim();
 			if (trimmed.isEmpty()) {
 				continue;
@@ -455,7 +559,7 @@ public class AlchBlockerPlugin extends Plugin
 				result.append(trimmed).append("\n");
 			}
 		}
-		configManager.setConfiguration(AlchBlockerConfig.GROUP, "itemList", result.toString());
+		configManager.setConfiguration(AlchBlockerConfig.GROUP, key, result.toString());
 		showBlockedItems();
 	}
 
@@ -485,32 +589,13 @@ public class AlchBlockerPlugin extends Plugin
 
 			final String itemName = w.getName();
 			final String plainItemName = Text.removeTags(itemName).replace('\u00A0', ' ').trim();
-
-			// Issue #44 / card #8: a helper-rule-only block can't be lifted by a normal list edit, so
-			// offer the one thing that actually works instead - a "!" exception (issue #36) - rather
-			// than a Blacklist/Whitelist entry that would silently do nothing.
-			if (isBlockedOnlyByHelperRules(itemId, plainItemName, w.getId() == EXPLORERS_RING_INVENTORY_WIDGET_ID)) {
-				client.getMenu().createMenuEntry(idx)
-					.setOption("Always allow Alchemy")
-					.setTarget(itemName)
-					.setType(MenuAction.RUNELITE)
-					.onClick(e -> addToItemList("!" + plainItemName));
-				return;
-			}
-
-			// Item already in block list, no need to add menu item
-			if (
-				(hiddenItems.contains(itemId) && config.listType() == ListType.BLACKLIST) ||
-				(!hiddenItems.contains(itemId) && config.listType() == ListType.WHITELIST)
-			) {
-				return;
-			}
+			final boolean ringPowered = w.getId() == EXPLORERS_RING_INVENTORY_WIDGET_ID;
 
 			client.getMenu().createMenuEntry(idx)
-				.setOption(config.listType() == ListType.BLACKLIST ? "Blacklist Alchemy" : "Whitelist Alchemy")
+				.setOption(primaryListActionLabel(itemId, plainItemName, ringPowered))
 				.setTarget(itemName)
 				.setType(MenuAction.RUNELITE)
-				.onClick(e -> addToItemList(plainItemName));
+				.onClick(e -> applyPrimaryListAction(itemId, plainItemName, ringPowered));
 			return;
 		}
 	}
@@ -553,19 +638,19 @@ public class AlchBlockerPlugin extends Plugin
 			String itemName = normalize(inventoryItem.getName());
 			boolean shouldBlock;
 
-			// A "!" line means "always allow" in BOTH list modes (card #4 decision) - it is not
-			// "excluded from list matching", so it must never be folded into the list-match polarity
-			// check below (that flips its meaning to "blocked" in WHITELIST mode). It always wins
-			// over the list and over any helper rule (card #8 decision: precedence is confirm
-			// allowance -> ! line -> helper rules -> list).
+			// Precedence (card #9 spec section 2), first match wins: confirm allowance (handled
+			// above) -> ! line (pooled from both boxes) -> helper rules -> whitelist -> blacklist ->
+			// unlisted policy. A "!" line always wins over the list and over any helper rule.
 			if (isExcluded(itemName)) {
 				shouldBlock = false;
 			} else if (helperRulesActive && !HELPER_RULE_EXEMPT_ITEMS.contains(itemId) && isBlockedByHelperRules(itemId, ctx)) {
 				shouldBlock = true;
+			} else if (matchesWhitelist(itemId, itemName)) {
+				shouldBlock = false;
+			} else if (matchesBlacklist(itemId, itemName)) {
+				shouldBlock = true;
 			} else {
-				Boolean cached = listVerdictCache.get(itemId);
-				boolean matchesPattern = cached != null ? cached : cacheListVerdict(itemId, itemName);
-				shouldBlock = (config.listType() == ListType.BLACKLIST) == matchesPattern;
+				shouldBlock = config.unlistedItemPolicy() == UnlistedItemPolicy.BLOCK;
 			}
 
 			if (shouldBlock) {
@@ -577,12 +662,6 @@ public class AlchBlockerPlugin extends Plugin
 				hiddenItems.add(itemId);
 			}
 		}
-	}
-
-	private boolean cacheListVerdict(int itemId, String itemName) {
-		boolean matches = matchesListPatterns(itemName);
-		listVerdictCache.put(itemId, matches);
-		return matches;
 	}
 
 	/** Whether a "!" exclusion line matches this item name. Always wins, over the list and over any helper rule. */
@@ -598,19 +677,54 @@ public class AlchBlockerPlugin extends Plugin
 		return false;
 	}
 
+	private boolean matchesBlacklist(int itemId, String itemName) {
+		Boolean cached = blacklistVerdictCache.get(itemId);
+		if (cached != null) {
+			return cached;
+		}
+		boolean matches = matches(blacklistExact, blacklistWildcards, itemName);
+		blacklistVerdictCache.put(itemId, matches);
+		return matches;
+	}
+
+	private boolean matchesWhitelist(int itemId, String itemName) {
+		Boolean cached = whitelistVerdictCache.get(itemId);
+		if (cached != null) {
+			return cached;
+		}
+		boolean matches = matches(whitelistExact, whitelistWildcards, itemName);
+		whitelistVerdictCache.put(itemId, matches);
+		return matches;
+	}
+
 	/** Whether a plain (non-exclusion) list line matches this item name. */
-	private boolean matchesListPatterns(String itemName) {
+	private static boolean matches(Set<String> exact, List<String> wildcards, String itemName) {
 		// O(1) lookup for exact matches
-		if (exactMatches.contains(itemName)) {
+		if (exact.contains(itemName)) {
 			return true;
 		}
 		// Only iterate wildcard patterns (typically much smaller)
-		for (String pattern : wildcardPatterns) {
+		for (String pattern : wildcards) {
 			if (WildcardMatcher.matches(pattern, itemName)) {
 				return true;
 			}
 		}
 		return false;
+	}
+
+	/**
+	 * The block/allow verdict from the whitelist and blacklist alone, ignoring "!" exclusions and
+	 * helper rules - used to label and drive the move-between-lists menu action (card #9 spec).
+	 */
+	private boolean isBlockedByListOnly(int itemId, String plainName) {
+		String lower = plainName.toLowerCase();
+		if (matchesWhitelist(itemId, lower)) {
+			return false;
+		}
+		if (matchesBlacklist(itemId, lower)) {
+			return true;
+		}
+		return config.unlistedItemPolicy() == UnlistedItemPolicy.BLOCK;
 	}
 
 	/** True when any enabled helper rule config is on; gates the fast path in {@link #hideBlockedItems}. */
@@ -725,9 +839,7 @@ public class AlchBlockerPlugin extends Plugin
 		if (!isBlockedByHelperRules(itemId, currentAlchContext(ringPowered))) {
 			return false;
 		}
-		boolean matchesList = matchesListPatterns(lower);
-		boolean listWouldHaveBlocked = (config.listType() == ListType.BLACKLIST) == matchesList;
-		return !listWouldHaveBlocked;
+		return !isBlockedByListOnly(itemId, lower);
 	}
 
 	private void showBlockedItems() {
@@ -752,13 +864,24 @@ public class AlchBlockerPlugin extends Plugin
 		hiddenItems.clear();
 	}
 
-	private void parseItemList() {
-		exactMatches.clear();
-		wildcardPatterns.clear();
+	/**
+	 * Parses both boxes. "!" lines from either box are pooled into the shared exclusion collections -
+	 * which box a "!" line lives in doesn't matter (card #9 spec section 3).
+	 */
+	private void parseItemLists() {
+		blacklistExact.clear();
+		blacklistWildcards.clear();
+		whitelistExact.clear();
+		whitelistWildcards.clear();
 		exactExclusions.clear();
 		wildcardExclusions.clear();
 
-		for (String listItem : config.itemList().split("\n")) {
+		parseInto(config.blacklist(), blacklistExact, blacklistWildcards);
+		parseInto(config.whitelist(), whitelistExact, whitelistWildcards);
+	}
+
+	private void parseInto(String raw, Set<String> exact, List<String> wildcards) {
+		for (String listItem : raw.split("\n")) {
 			if (listItem.trim().isEmpty()) continue;
 
 			if (listItem.contains(",")) {
@@ -767,15 +890,15 @@ public class AlchBlockerPlugin extends Plugin
 						.map(String::toLowerCase)
 						.collect(Collectors.toSet());
 				for (String item : csvSet) {
-					addToAppropriateCollection(item);
+					addToAppropriateCollection(item, exact, wildcards);
 				}
 			} else {
-				addToAppropriateCollection(listItem.toLowerCase().trim());
+				addToAppropriateCollection(listItem.toLowerCase().trim(), exact, wildcards);
 			}
 		}
 	}
 
-	private void addToAppropriateCollection(String item) {
+	private void addToAppropriateCollection(String item, Set<String> exact, List<String> wildcards) {
 		boolean exclusion = item.startsWith("!");
 		if (exclusion) {
 			item = item.substring(1).trim();
@@ -786,9 +909,9 @@ public class AlchBlockerPlugin extends Plugin
 		}
 
 		if (item.contains("*")) {
-			(exclusion ? wildcardExclusions : wildcardPatterns).add(item);
+			(exclusion ? wildcardExclusions : wildcards).add(item);
 		} else {
-			(exclusion ? exactExclusions : exactMatches).add(item);
+			(exclusion ? exactExclusions : exact).add(item);
 		}
 	}
 }

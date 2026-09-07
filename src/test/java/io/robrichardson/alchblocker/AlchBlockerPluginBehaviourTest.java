@@ -6,6 +6,7 @@ import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.contains;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doAnswer;
@@ -19,7 +20,10 @@ import static org.mockito.Mockito.withSettings;
 import io.robrichardson.alchblocker.config.BlockedItemAction;
 import io.robrichardson.alchblocker.config.DisplayType;
 import io.robrichardson.alchblocker.config.ListType;
+import io.robrichardson.alchblocker.config.UnlistedItemPolicy;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import net.runelite.api.ChatMessageType;
 import net.runelite.api.Client;
 import net.runelite.api.GameState;
@@ -42,6 +46,7 @@ import net.runelite.api.widgets.Widget;
 import net.runelite.client.callback.ClientThread;
 import net.runelite.client.config.ConfigManager;
 import net.runelite.client.events.ConfigChanged;
+import net.runelite.client.events.ProfileChanged;
 import net.runelite.client.game.ItemManager;
 import net.runelite.client.game.chatbox.ChatboxPanelManager;
 import net.runelite.client.game.chatbox.ChatboxTextMenuInput;
@@ -49,6 +54,7 @@ import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.ArgumentCaptor;
+import org.mockito.ArgumentMatchers;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.Mockito;
@@ -103,8 +109,9 @@ public class AlchBlockerPluginBehaviourTest
 		doAnswer(inv -> { ((Runnable) inv.getArgument(0)).run(); return null; }).when(clientThread).invokeAtTickEnd(any(Runnable.class));
 		doAnswer(inv -> { ((Runnable) inv.getArgument(0)).run(); return null; }).when(clientThread).invoke(any(Runnable.class));
 
-		when(config.itemList()).thenReturn("coins");
-		when(config.listType()).thenReturn(ListType.BLACKLIST);
+		when(config.blacklist()).thenReturn("coins");
+		when(config.whitelist()).thenReturn("");
+		when(config.unlistedItemPolicy()).thenReturn(UnlistedItemPolicy.ALLOW);
 		when(config.displayType()).thenReturn(DisplayType.TRANSPARENT);
 		when(config.contextMenuEnabled()).thenReturn(true);
 		when(config.blockedItemAction()).thenReturn(BlockedItemAction.BLOCK);
@@ -144,6 +151,11 @@ public class AlchBlockerPluginBehaviourTest
 		when(highAlchSpell.getId()).thenReturn(InterfaceID.MagicSpellbook.HIGH_ALCHEMY);
 
 		plugin.startUp();
+		// startUp() runs migrate(), which writes "configVersion" via configManager even when there is
+		// nothing to migrate (an untouched mock reports every legacy key as absent already, i.e.
+		// already-current). Tests that assert on configManager writes only care about what a specific
+		// action writes, so start each test's recording from a clean slate.
+		Mockito.clearInvocations(configManager);
 	}
 
 	private void selectSpell(Widget spell)
@@ -337,8 +349,8 @@ public class AlchBlockerPluginBehaviourTest
 	@Test
 	public void exclusionOverridesWildcardInBlacklistMode()
 	{
-		when(config.itemList()).thenReturn("*(4)\n!prayer potion(4)");
-		plugin.onConfigChanged(configChanged("itemList"));
+		when(config.blacklist()).thenReturn("*(4)\n!prayer potion(4)");
+		plugin.onConfigChanged(configChanged("blacklist"));
 
 		Slot prayerPotion = new Slot(InterfaceID.Inventory.ITEMS, 2434, "Prayer potion(4)");
 		Slot superCombat = new Slot(InterfaceID.Inventory.ITEMS, 12695, "Super combat potion(4)");
@@ -368,9 +380,10 @@ public class AlchBlockerPluginBehaviourTest
 	@Test
 	public void exclusionOverridesWildcardInWhitelistMode()
 	{
-		when(config.listType()).thenReturn(ListType.WHITELIST);
-		when(config.itemList()).thenReturn("*(4)\n!prayer potion(4)");
-		plugin.onConfigChanged(configChanged("itemList"));
+		when(config.blacklist()).thenReturn("");
+		when(config.whitelist()).thenReturn("*(4)\n!prayer potion(4)");
+		when(config.unlistedItemPolicy()).thenReturn(UnlistedItemPolicy.BLOCK);
+		plugin.onConfigChanged(configChanged("whitelist"));
 
 		Slot prayerPotion = new Slot(InterfaceID.Inventory.ITEMS, 2434, "Prayer potion(4)");
 		Slot superCombat = new Slot(InterfaceID.Inventory.ITEMS, 12695, "Super combat potion(4)");
@@ -390,8 +403,8 @@ public class AlchBlockerPluginBehaviourTest
 		Slot prayerPotion = new Slot(InterfaceID.Inventory.ITEMS, 2434, "Prayer potion(4)");
 		Slot superCombat = new Slot(InterfaceID.Inventory.ITEMS, 12695, "Super combat potion(4)");
 
-		when(config.itemList()).thenReturn("*potion*\n!*prayer*");
-		plugin.onConfigChanged(configChanged("itemList"));
+		when(config.blacklist()).thenReturn("*potion*\n!*prayer*");
+		plugin.onConfigChanged(configChanged("blacklist"));
 		inventoryOf(prayerPotion, superCombat);
 		selectSpell(highAlchSpell);
 		redrawInventory();
@@ -401,8 +414,8 @@ public class AlchBlockerPluginBehaviourTest
 		// Reversed order, fresh slots so the cache/hidden state from the pass above can't leak in
 		Slot prayerPotion2 = new Slot(InterfaceID.Inventory.ITEMS, 2434, "Prayer potion(4)");
 		Slot superCombat2 = new Slot(InterfaceID.Inventory.ITEMS, 12695, "Super combat potion(4)");
-		when(config.itemList()).thenReturn("!*prayer*\n*potion*");
-		plugin.onConfigChanged(configChanged("itemList"));
+		when(config.blacklist()).thenReturn("!*prayer*\n*potion*");
+		plugin.onConfigChanged(configChanged("blacklist"));
 		inventoryOf(prayerPotion2, superCombat2);
 		redrawInventory();
 		assertEquals(0, prayerPotion2.opacity);
@@ -413,8 +426,8 @@ public class AlchBlockerPluginBehaviourTest
 	@Test
 	public void exclusionParsingHandlesCsvBareBangAndWhitespace()
 	{
-		when(config.itemList()).thenReturn("*(4), !prayer potion(4)\n!\n! coins \n");
-		plugin.onConfigChanged(configChanged("itemList"));
+		when(config.blacklist()).thenReturn("*(4), !prayer potion(4)\n!\n! coins \n");
+		plugin.onConfigChanged(configChanged("blacklist"));
 
 		Slot prayerPotion = new Slot(InterfaceID.Inventory.ITEMS, 2434, "Prayer potion(4)");
 		Slot superCombat = new Slot(InterfaceID.Inventory.ITEMS, 12695, "Super combat potion(4)");
@@ -425,9 +438,9 @@ public class AlchBlockerPluginBehaviourTest
 		assertEquals(200, superCombat.opacity);
 
 		// "coins" was excluded (with surrounding whitespace trimmed) and the default Rune pouch
-		// pattern must still be intact (regression guard on parseItemList's default list).
-		when(config.itemList()).thenReturn("*Rune Pouch\n! coins ");
-		plugin.onConfigChanged(configChanged("itemList"));
+		// pattern must still be intact (regression guard on parseItemLists' default blacklist).
+		when(config.blacklist()).thenReturn("*Rune Pouch\n! coins ");
+		plugin.onConfigChanged(configChanged("blacklist"));
 		Slot runePouch = new Slot(InterfaceID.Inventory.ITEMS, 27281, "Rune pouch");
 		Slot coinsSlot = new Slot(InterfaceID.Inventory.ITEMS, COINS, "Coins");
 		inventoryOf(runePouch, coinsSlot);
@@ -587,39 +600,40 @@ public class AlchBlockerPluginBehaviourTest
 	}
 
 	/**
-	 * Issue #18 / card #4 decision: "always allow" edits the item list with a "!" exclusion line in
-	 * BOTH list modes - a "!" line means "always allow this item" regardless of listType, not
-	 * "excluded from list matching".
+	 * Issue #18 / card #9 decision: "always allow" applies the same move-between-lists action the
+	 * context menu would (card #9 spec section 5.3) - for a plain blacklist block, that moves the
+	 * item to the whitelist rather than writing a "!" line (which is reserved for helper-rule blocks).
 	 */
 	@Test
-	public void alwaysAllowAppendsAnExclusionLineInBlacklistMode()
+	public void alwaysAllowMovesTheItemToTheWhitelistInBlacklistMode()
 	{
 		when(config.blockedItemAction()).thenReturn(BlockedItemAction.CONFIRM);
-		when(config.itemList()).thenReturn("coins");
-		plugin.onConfigChanged(configChanged("itemList"));
+		when(config.blacklist()).thenReturn("coins");
+		plugin.onConfigChanged(configChanged("blacklist"));
 		selectSpell(highAlchSpell);
 		redrawInventory();
 
 		plugin.onMenuOptionClicked(alchClick(coins));
 		optionCallback("always allow").run();
 
-		verify(configManager).setConfiguration(eq(AlchBlockerConfig.GROUP), eq("itemList"), contains("!Coins"));
+		verify(configManager).setConfiguration(eq(AlchBlockerConfig.GROUP), eq("whitelist"), contains("Coins"));
 	}
 
 	@Test
-	public void alwaysAllowAppendsAnExclusionLineInWhitelistModeToo()
+	public void alwaysAllowMovesTheItemToTheWhitelistInWhitelistModeToo()
 	{
 		when(config.blockedItemAction()).thenReturn(BlockedItemAction.CONFIRM);
-		when(config.listType()).thenReturn(ListType.WHITELIST);
-		when(config.itemList()).thenReturn("bones");
-		plugin.onConfigChanged(configChanged("itemList"));
+		when(config.blacklist()).thenReturn("");
+		when(config.whitelist()).thenReturn("bones");
+		when(config.unlistedItemPolicy()).thenReturn(UnlistedItemPolicy.BLOCK);
+		plugin.onConfigChanged(configChanged("whitelist"));
 		selectSpell(highAlchSpell);
 		redrawInventory();
 
 		plugin.onMenuOptionClicked(alchClick(coins));
 		optionCallback("always allow").run();
 
-		verify(configManager).setConfiguration(eq(AlchBlockerConfig.GROUP), eq("itemList"), contains("!Coins"));
+		verify(configManager).setConfiguration(eq(AlchBlockerConfig.GROUP), eq("whitelist"), contains("Coins"));
 	}
 
 	/** Rob's ask: shift-click an inventory item to add its raw name to the item list. */
@@ -658,38 +672,42 @@ public class AlchBlockerPluginBehaviourTest
 		verify(created).onClick(onClick.capture());
 		onClick.getValue().accept(created);
 
-		verify(configManager).setConfiguration(eq(AlchBlockerConfig.GROUP), eq("itemList"), contains("\nBones"));
+		verify(configManager).setConfiguration(eq(AlchBlockerConfig.GROUP), eq("blacklist"), contains("\nBones"));
 		verify(configManager, never()).setConfiguration(any(), any(), contains("*"));
 	}
 
+	/** An exact blacklist match: shift-click moves it to the whitelist and drops the blacklist line. */
 	@Test
-	public void shiftClickOnAnAlreadyListedItemRemovesTheLine()
+	public void shiftClickOnAnAlreadyListedItemMovesItToTheWhitelist()
 	{
 		when(config.shiftClickAddsToList()).thenReturn(true);
 		when(client.isKeyPressed(KeyCode.KC_SHIFT)).thenReturn(true);
-		when(config.itemList()).thenReturn("coins");
-		plugin.onConfigChanged(configChanged("itemList"));
+		when(config.blacklist()).thenReturn("coins");
+		plugin.onConfigChanged(configChanged("blacklist"));
 
 		MenuEntry created = mock(MenuEntry.class, withSettings().defaultAnswer(Mockito.RETURNS_SELF));
 		when(menu.createMenuEntry(-1)).thenReturn(created);
 		postMenuSort(itemMenuEntry(coins.widget));
-		verify(created).setOption("Remove from Alch list");
+		verify(created).setOption("Whitelist Alchemy");
 
 		ArgumentCaptor<java.util.function.Consumer<MenuEntry>> onClick = ArgumentCaptor.forClass(java.util.function.Consumer.class);
 		verify(created).onClick(onClick.capture());
 		onClick.getValue().accept(created);
 
-		ArgumentCaptor<String> written = ArgumentCaptor.forClass(String.class);
-		verify(configManager).setConfiguration(eq(AlchBlockerConfig.GROUP), eq("itemList"), written.capture());
-		assertFalse("the coins line must be gone", written.getValue().toLowerCase().contains("coins"));
+		ArgumentCaptor<String> blacklistWritten = ArgumentCaptor.forClass(String.class);
+		verify(configManager).setConfiguration(eq(AlchBlockerConfig.GROUP), eq("blacklist"), blacklistWritten.capture());
+		assertFalse("the coins line must be gone from the blacklist", blacklistWritten.getValue().toLowerCase().contains("coins"));
+		verify(configManager).setConfiguration(eq(AlchBlockerConfig.GROUP), eq("whitelist"), contains("Coins"));
 
-		// Round trip: with the line gone, a second shift-click adds it back.
-		when(config.itemList()).thenReturn(written.getValue());
-		plugin.onConfigChanged(configChanged("itemList"));
+		// Round trip: with coins now whitelisted (and gone from the blacklist), a second shift-click
+		// offers "Remove from whitelist".
+		when(config.blacklist()).thenReturn(blacklistWritten.getValue());
+		when(config.whitelist()).thenReturn("coins");
+		plugin.onConfigChanged(configChanged("whitelist"));
 		MenuEntry created2 = mock(MenuEntry.class, withSettings().defaultAnswer(Mockito.RETURNS_SELF));
 		when(menu.createMenuEntry(-1)).thenReturn(created2);
 		postMenuSort(itemMenuEntry(coins.widget));
-		verify(created2).setOption("Blacklist Alchemy");
+		verify(created2).setOption("Remove from whitelist");
 	}
 
 	@Test
@@ -697,24 +715,24 @@ public class AlchBlockerPluginBehaviourTest
 	{
 		when(config.shiftClickAddsToList()).thenReturn(true);
 		when(client.isKeyPressed(KeyCode.KC_SHIFT)).thenReturn(true);
-		when(config.itemList()).thenReturn("*(4)");
-		plugin.onConfigChanged(configChanged("itemList"));
+		when(config.blacklist()).thenReturn("*(4)");
+		plugin.onConfigChanged(configChanged("blacklist"));
 
 		Slot prayerPotion = new Slot(InterfaceID.Inventory.ITEMS, 2434, "Prayer potion(4)");
 
 		MenuEntry created = mock(MenuEntry.class, withSettings().defaultAnswer(Mockito.RETURNS_SELF));
 		when(menu.createMenuEntry(-1)).thenReturn(created);
 		postMenuSort(itemMenuEntry(prayerPotion.widget));
-		verify(created).setOption("Blacklist Alchemy");   // add variant, not remove
+		verify(created).setOption("Whitelist Alchemy");   // moves to whitelist, wildcard untouched
 
 		ArgumentCaptor<java.util.function.Consumer<MenuEntry>> onClick = ArgumentCaptor.forClass(java.util.function.Consumer.class);
 		verify(created).onClick(onClick.capture());
 		onClick.getValue().accept(created);
 
 		ArgumentCaptor<String> written = ArgumentCaptor.forClass(String.class);
-		verify(configManager).setConfiguration(eq(AlchBlockerConfig.GROUP), eq("itemList"), written.capture());
+		verify(configManager).setConfiguration(eq(AlchBlockerConfig.GROUP), eq("blacklist"), written.capture());
 		assertTrue("the wildcard pattern must survive", written.getValue().contains("*(4)"));
-		assertTrue("the exact name must be appended", written.getValue().contains("Prayer potion(4)"));
+		verify(configManager).setConfiguration(eq(AlchBlockerConfig.GROUP), eq("whitelist"), contains("Prayer potion(4)"));
 	}
 
 	@Test
@@ -749,7 +767,7 @@ public class AlchBlockerPluginBehaviourTest
 	}
 
 	@Test
-	public void contextMenuEntryNotAddedForAlreadyBlockedItemOrNonAlchMenus()
+	public void contextMenuOffersWhitelistEntryForAnAlreadyBlacklistedItemAndNothingForNonAlchMenus()
 	{
 		selectSpell(highAlchSpell);
 		redrawInventory();
@@ -757,11 +775,12 @@ public class AlchBlockerPluginBehaviourTest
 		MenuEntry created = mock(MenuEntry.class, withSettings().defaultAnswer(Mockito.RETURNS_SELF));
 		when(menu.createMenuEntry(anyInt())).thenReturn(created);
 
-		// Already blacklisted item: nothing to add
+		// Already blacklisted item: every state has a useful move (card #9 spec), so the entry offered
+		// is "Whitelist Alchemy" - moving the item to the whitelist - not nothing.
 		MenuOpened opened = new MenuOpened();
 		opened.setMenuEntries(new MenuEntry[]{alchEntry(coins, "Cast", "High Level Alchemy -> Coins")});
 		plugin.onMenuOpened(opened);
-		verify(menu, never()).createMenuEntry(anyInt());
+		verify(created).setOption("Whitelist Alchemy");
 
 		// Plain right-click on an item with no spell selected: nothing to add
 		selectSpell(null);
@@ -771,6 +790,7 @@ public class AlchBlockerPluginBehaviourTest
 		when(use.getTarget()).thenReturn("<col=ff9040>Bones</col>");
 		when(use.getWidget()).thenReturn(bones.widget);
 		opened.setMenuEntries(new MenuEntry[]{use});
+		Mockito.clearInvocations(menu);
 		plugin.onMenuOpened(opened);
 		verify(menu, never()).createMenuEntry(anyInt());
 	}
@@ -809,18 +829,20 @@ public class AlchBlockerPluginBehaviourTest
 	{
 		when(config.notedItemsOnly()).thenReturn(true);
 
-		// WHITELIST with Bones listed but un-noted: still blocked, the list can't override the gate.
-		when(config.listType()).thenReturn(ListType.WHITELIST);
-		when(config.itemList()).thenReturn("bones");
-		plugin.onConfigChanged(configChanged("itemList"));
+		// Whitelisted but un-noted: still blocked, the list can't override the gate.
+		when(config.blacklist()).thenReturn("");
+		when(config.whitelist()).thenReturn("bones");
+		when(config.unlistedItemPolicy()).thenReturn(UnlistedItemPolicy.BLOCK);
+		plugin.onConfigChanged(configChanged("whitelist"));
 		selectSpell(highAlchSpell);
 		redrawInventory();
 		assertEquals(200, bones.opacity);
 
-		// BLACKLIST with a noted item on the list: still blocked, the gate doesn't override the list.
-		when(config.listType()).thenReturn(ListType.BLACKLIST);
-		when(config.itemList()).thenReturn("bones");
-		plugin.onConfigChanged(configChanged("itemList"));
+		// Blacklisted, but a noted item: still blocked, the gate doesn't override the list.
+		when(config.whitelist()).thenReturn("");
+		when(config.blacklist()).thenReturn("bones");
+		when(config.unlistedItemPolicy()).thenReturn(UnlistedItemPolicy.ALLOW);
+		plugin.onConfigChanged(configChanged("blacklist"));
 		stubNoted(BONES, true);
 		redrawInventory();
 		assertEquals(200, bones.opacity);
@@ -851,8 +873,8 @@ public class AlchBlockerPluginBehaviourTest
 	public void bangExceptionOverridesTheNotedRule()
 	{
 		when(config.notedItemsOnly()).thenReturn(true);
-		when(config.itemList()).thenReturn("coins\n!bones");
-		plugin.onConfigChanged(configChanged("itemList"));
+		when(config.blacklist()).thenReturn("coins\n!bones");
+		plugin.onConfigChanged(configChanged("blacklist"));
 		selectSpell(highAlchSpell);
 		redrawInventory();
 
@@ -883,7 +905,7 @@ public class AlchBlockerPluginBehaviourTest
 		verify(created).onClick(onClick.capture());
 		onClick.getValue().accept(created);
 
-		verify(configManager).setConfiguration(eq(AlchBlockerConfig.GROUP), eq("itemList"), contains("!Bones"));
+		verify(configManager).setConfiguration(eq(AlchBlockerConfig.GROUP), eq("whitelist"), contains("!Bones"));
 	}
 
 	@Test
@@ -904,7 +926,7 @@ public class AlchBlockerPluginBehaviourTest
 		verify(created).onClick(onClick.capture());
 		onClick.getValue().accept(created);
 
-		verify(configManager).setConfiguration(eq(AlchBlockerConfig.GROUP), eq("itemList"), contains("!Bones"));
+		verify(configManager).setConfiguration(eq(AlchBlockerConfig.GROUP), eq("whitelist"), contains("!Bones"));
 	}
 
 	/**
@@ -935,10 +957,11 @@ public class AlchBlockerPluginBehaviourTest
 	@Test
 	public void notedRuleDoesNotHijackTheWhitelistMenuEntryWhenTheListAlsoBlocksTheItem()
 	{
-		when(config.listType()).thenReturn(ListType.WHITELIST);
+		when(config.blacklist()).thenReturn("");
+		when(config.whitelist()).thenReturn("");
+		when(config.unlistedItemPolicy()).thenReturn(UnlistedItemPolicy.BLOCK);
 		when(config.notedItemsOnly()).thenReturn(true);
-		when(config.itemList()).thenReturn("");
-		plugin.onConfigChanged(configChanged("itemList"));
+		plugin.onConfigChanged(configChanged("unlistedItemPolicy"));
 		selectSpell(highAlchSpell);
 		redrawInventory();
 		assertEquals("bones is blocked by both the list and the noted rule", 200, bones.opacity);
@@ -960,12 +983,13 @@ public class AlchBlockerPluginBehaviourTest
 	@Test
 	public void alwaysAllowActuallyUnblocksTheItemInWhitelistModeWithNotedItemsOnly()
 	{
-		when(config.listType()).thenReturn(ListType.WHITELIST);
 		when(config.notedItemsOnly()).thenReturn(true);
 		// Bones is already whitelisted (the list itself would allow it), so it is blocked ONLY by
 		// the noted-only rule - this is what makes "Always allow Alchemy" the offered entry.
-		when(config.itemList()).thenReturn("bones");
-		plugin.onConfigChanged(configChanged("itemList"));
+		when(config.blacklist()).thenReturn("");
+		when(config.whitelist()).thenReturn("bones");
+		when(config.unlistedItemPolicy()).thenReturn(UnlistedItemPolicy.BLOCK);
+		plugin.onConfigChanged(configChanged("whitelist"));
 		selectSpell(highAlchSpell);
 		redrawInventory();
 		assertEquals(200, bones.opacity);
@@ -981,10 +1005,10 @@ public class AlchBlockerPluginBehaviourTest
 		verify(created).onClick(onClick.capture());
 		ArgumentCaptor<String> written = ArgumentCaptor.forClass(String.class);
 		onClick.getValue().accept(created);
-		verify(configManager).setConfiguration(eq(AlchBlockerConfig.GROUP), eq("itemList"), written.capture());
+		verify(configManager).setConfiguration(eq(AlchBlockerConfig.GROUP), eq("whitelist"), written.capture());
 
-		when(config.itemList()).thenReturn(written.getValue());
-		plugin.onConfigChanged(configChanged("itemList"));
+		when(config.whitelist()).thenReturn(written.getValue());
+		plugin.onConfigChanged(configChanged("whitelist"));
 		redrawInventory();
 
 		assertEquals("the item must now actually be alchable", 0, bones.opacity);
@@ -1122,11 +1146,12 @@ public class AlchBlockerPluginBehaviourTest
 	@Test
 	public void helperRuleBlocksEvenAWhitelistedName()
 	{
-		when(config.listType()).thenReturn(ListType.WHITELIST);
-		when(config.itemList()).thenReturn("bones");
+		when(config.blacklist()).thenReturn("");
+		when(config.whitelist()).thenReturn("bones");
+		when(config.unlistedItemPolicy()).thenReturn(UnlistedItemPolicy.BLOCK);
 		when(config.blockUntradeable()).thenReturn(true);
 		stubItem(BONES, 1000, 600, 1000, false, false);
-		plugin.onConfigChanged(configChanged("itemList"));
+		plugin.onConfigChanged(configChanged("whitelist"));
 		selectSpell(highAlchSpell);
 		redrawInventory();
 
@@ -1138,9 +1163,9 @@ public class AlchBlockerPluginBehaviourTest
 	public void bangExceptionOverridesHelperRule()
 	{
 		when(config.blockUntradeable()).thenReturn(true);
-		when(config.itemList()).thenReturn("coins\n!bones");
+		when(config.blacklist()).thenReturn("coins\n!bones");
 		stubItem(BONES, 1000, 600, 1000, false, false);
-		plugin.onConfigChanged(configChanged("itemList"));
+		plugin.onConfigChanged(configChanged("blacklist"));
 		selectSpell(highAlchSpell);
 		redrawInventory();
 
@@ -1275,9 +1300,219 @@ public class AlchBlockerPluginBehaviourTest
 
 		assertEquals("MTA items are exempt from helper rules", 0, mtaItem.opacity);
 
-		when(config.itemList()).thenReturn("charged emerald");
-		plugin.onConfigChanged(configChanged("itemList"));
+		when(config.blacklist()).thenReturn("charged emerald");
+		plugin.onConfigChanged(configChanged("blacklist"));
 
 		assertEquals("the exemption covers helper rules only - the list can still block it by name", 200, mtaItem.opacity);
+	}
+
+	// --- Card #9: two-list model + migration ---
+
+	private Map<String, Object> configStore;
+
+	/**
+	 * Stands the mocked {@code configManager} in for a real profile's key/value store, so
+	 * {@code migrate()} can be driven end to end (read legacy keys, write new ones, and see those
+	 * writes on a second call) rather than only checked via {@code verify()} call counts.
+	 */
+	private void wireConfigManagerAsStore() {
+		configStore = new HashMap<>();
+		lenient().when(configManager.getConfiguration(eq(AlchBlockerConfig.GROUP), anyString())).thenAnswer(inv -> {
+			Object v = configStore.get((String) inv.getArgument(1));
+			return v == null ? null : v.toString();
+		});
+		lenient().when(configManager.getConfiguration(eq(AlchBlockerConfig.GROUP), anyString(), ArgumentMatchers.<java.lang.reflect.Type>any())).thenAnswer(inv ->
+			configStore.get((String) inv.getArgument(1))
+		);
+		// ConfigManager overloads setConfiguration as both (group, key, String) and a generic
+		// (group, key, T) - an any() matcher on the third argument binds to only one of them (the
+		// compiler picks the most specific applicable overload), so each concrete type migrate()
+		// actually writes needs its own stub to be intercepted.
+		lenient().doAnswer(inv -> {
+			configStore.put((String) inv.getArgument(1), inv.getArgument(2));
+			return null;
+		}).when(configManager).setConfiguration(eq(AlchBlockerConfig.GROUP), anyString(), anyString());
+		lenient().doAnswer(inv -> {
+			configStore.put((String) inv.getArgument(1), inv.getArgument(2));
+			return null;
+		}).when(configManager).setConfiguration(eq(AlchBlockerConfig.GROUP), anyString(), any(UnlistedItemPolicy.class));
+		lenient().doAnswer(inv -> {
+			configStore.put((String) inv.getArgument(1), inv.getArgument(2));
+			return null;
+		}).when(configManager).setConfiguration(eq(AlchBlockerConfig.GROUP), anyString(), any(Integer.class));
+	}
+
+	/** Migration must be a no-op the second time it runs (idempotent on the configVersion marker). */
+	@Test
+	public void migrationRunsTwiceIsANoOp() throws Exception {
+		wireConfigManagerAsStore();
+		configStore.put("itemList", "dragon dagger");
+		configStore.put("listType", ListType.BLACKLIST);
+
+		plugin.startUp();
+		Map<String, Object> afterFirstMigration = new HashMap<>(configStore);
+
+		Mockito.clearInvocations(configManager);
+		plugin.startUp();
+
+		assertEquals("a second migration must not change the store", afterFirstMigration, configStore);
+		verify(configManager, never()).setConfiguration(eq(AlchBlockerConfig.GROUP), eq("blacklist"), any());
+		verify(configManager, never()).setConfiguration(eq(AlchBlockerConfig.GROUP), eq("whitelist"), any());
+		verify(configManager, never()).setConfiguration(eq(AlchBlockerConfig.GROUP), eq("unlistedItemPolicy"), any());
+	}
+
+	/** A legacy WHITELIST install's entries land in the new whitelist box, not the blacklist. */
+	@Test
+	public void oldInstallWithListTypeWhitelistLandsWithEntriesInWhitelist() throws Exception {
+		wireConfigManagerAsStore();
+		configStore.put("itemList", "rune scimitar\ndragon dagger");
+		configStore.put("listType", ListType.WHITELIST);
+
+		plugin.startUp();
+
+		assertEquals("rune scimitar\ndragon dagger", configStore.get("whitelist"));
+		assertEquals(UnlistedItemPolicy.BLOCK, configStore.get("unlistedItemPolicy"));
+		// Trap #1: blacklist's own default is the rune pouch/dose list, so it must be explicitly
+		// cleared - a migrated whitelist user must not inherit blacklist entries they never asked for.
+		assertEquals("", configStore.get("blacklist"));
+	}
+
+	/** A legacy BLACKLIST install keeps its list as the blacklist, under the ALLOW policy. */
+	@Test
+	public void oldBlacklistInstallKeepsItsListAndAllowPolicy() throws Exception {
+		wireConfigManagerAsStore();
+		configStore.put("itemList", "coins");
+		configStore.put("listType", ListType.BLACKLIST);
+
+		plugin.startUp();
+
+		assertEquals("coins", configStore.get("blacklist"));
+		assertEquals(UnlistedItemPolicy.ALLOW, configStore.get("unlistedItemPolicy"));
+		assertEquals("whitelist is left unset; its own default is already empty", null, configStore.get("whitelist"));
+	}
+
+	/**
+	 * Trap #2: an untouched install never wrote {@code itemList}/{@code listType} at all (RuneLite
+	 * only persists a key once it differs from the interface default), so null must be read as "was
+	 * on the default", not "empty" - migrate() must leave the new blacklist on its own default rather
+	 * than blanking it.
+	 */
+	@Test
+	public void untouchedInstallMigratesToTheDefaultBlacklist() throws Exception {
+		wireConfigManagerAsStore();
+		// Both legacy keys are absent - simulates the config interface's own defaults, which a real
+		// ConfigManager proxy would already be returning for an install that never touched these keys.
+		when(config.blacklist()).thenReturn("*Rune Pouch\n*(1)\n*(2)\n*(3)\n*(4)\n");
+		when(config.whitelist()).thenReturn("");
+		when(config.unlistedItemPolicy()).thenReturn(UnlistedItemPolicy.ALLOW);
+
+		plugin.startUp();
+
+		verify(configManager, never()).setConfiguration(eq(AlchBlockerConfig.GROUP), eq("blacklist"), any());
+		Slot runePouch = new Slot(InterfaceID.Inventory.ITEMS, 27281, "Rune pouch");
+		inventoryOf(runePouch, bones);
+		selectSpell(highAlchSpell);
+		redrawInventory();
+		assertEquals("Rune pouch is still blocked by the untouched default", 200, runePouch.opacity);
+	}
+
+	/**
+	 * RuneLite config keys are profile-scoped, so switching to a profile that has never been
+	 * migrated must migrate it there and then, not just at client startup.
+	 */
+	@Test
+	public void profileChangeMigratesAnUnmigratedProfile() {
+		wireConfigManagerAsStore();
+		configStore.put("itemList", "abyssal whip");
+		configStore.put("listType", ListType.WHITELIST);
+
+		plugin.onProfileChanged(new ProfileChanged());
+
+		assertEquals("abyssal whip", configStore.get("whitelist"));
+		assertEquals(2, configStore.get("configVersion"));
+
+		Mockito.clearInvocations(configManager);
+		plugin.onProfileChanged(new ProfileChanged());
+		verify(configManager, never()).setConfiguration(eq(AlchBlockerConfig.GROUP), eq("whitelist"), any());
+	}
+
+	/** Precedence row 4 above row 5: the whitelist beats a blacklist wildcard match. */
+	@Test
+	public void whitelistEntryOverridesBlacklistWildcard() {
+		when(config.blacklist()).thenReturn("*(4)");
+		when(config.whitelist()).thenReturn("prayer potion(4)");
+		when(config.unlistedItemPolicy()).thenReturn(UnlistedItemPolicy.ALLOW);
+		plugin.onConfigChanged(configChanged("whitelist"));
+
+		Slot prayerPotion = new Slot(InterfaceID.Inventory.ITEMS, 2434, "Prayer potion(4)");
+		Slot superCombat = new Slot(InterfaceID.Inventory.ITEMS, 12695, "Super combat potion(4)");
+		inventoryOf(prayerPotion, superCombat);
+		selectSpell(highAlchSpell);
+		redrawInventory();
+
+		assertEquals("the whitelist beats the blacklist's wildcard match", 0, prayerPotion.opacity);
+		MenuOptionClicked click = alchClick(prayerPotion);
+		plugin.onMenuOptionClicked(click);
+		assertFalse(click.isConsumed());
+		assertEquals("super combat potion is still blacklisted", 200, superCombat.opacity);
+	}
+
+	/**
+	 * Precedence rows 2 and 3b: a helper rule blocks a plain whitelist entry (row 3b above row 4), but
+	 * a "!" line - pooled from either box - still always allows it (row 2 above row 3b).
+	 */
+	@Test
+	public void helperRuleBlocksAWhitelistedItemButABangLineDoesNot() {
+		when(config.notedItemsOnly()).thenReturn(true);
+		when(config.blacklist()).thenReturn("");
+		when(config.whitelist()).thenReturn("bones");
+		when(config.unlistedItemPolicy()).thenReturn(UnlistedItemPolicy.ALLOW);
+		plugin.onConfigChanged(configChanged("whitelist"));
+		selectSpell(highAlchSpell);
+		redrawInventory();
+		assertEquals("un-noted whitelisted bones is still blocked by the noted-only helper rule", 200, bones.opacity);
+
+		// The "!" line lives in the blacklist box this time - pooled exclusions don't care which box.
+		when(config.blacklist()).thenReturn("!bones");
+		plugin.onConfigChanged(configChanged("blacklist"));
+		redrawInventory();
+		assertEquals("a ! line in either box always allows, beating the helper rule too", 0, bones.opacity);
+	}
+
+	/** The context menu's move-to-whitelist action drops the exact blacklist line it came from. */
+	@Test
+	public void movingAnItemToTheWhitelistRemovesItsBlacklistLine() {
+		when(config.blacklist()).thenReturn("coins");
+		plugin.onConfigChanged(configChanged("blacklist"));
+		selectSpell(highAlchSpell);
+		redrawInventory();
+
+		MenuEntry created = mock(MenuEntry.class, withSettings().defaultAnswer(Mockito.RETURNS_SELF));
+		when(menu.createMenuEntry(anyInt())).thenReturn(created);
+		MenuOpened opened = new MenuOpened();
+		opened.setMenuEntries(new MenuEntry[]{alchEntry(coins, "Cast", "High Level Alchemy -> Coins")});
+		plugin.onMenuOpened(opened);
+		verify(created).setOption("Whitelist Alchemy");
+
+		ArgumentCaptor<java.util.function.Consumer<MenuEntry>> onClick = ArgumentCaptor.forClass(java.util.function.Consumer.class);
+		verify(created).onClick(onClick.capture());
+		onClick.getValue().accept(created);
+
+		verify(configManager).setConfiguration(eq(AlchBlockerConfig.GROUP), eq("blacklist"),
+			argThat(written -> !written.toLowerCase().contains("coins")));
+		verify(configManager).setConfiguration(eq(AlchBlockerConfig.GROUP), eq("whitelist"), contains("Coins"));
+	}
+
+	/** Phase 1 (card #9 spec section 6.2): the legacy keys must survive migration, for a safe rollback. */
+	@Test
+	public void legacyKeysSurvivePhaseOneMigration() throws Exception {
+		wireConfigManagerAsStore();
+		configStore.put("itemList", "coins");
+		configStore.put("listType", ListType.BLACKLIST);
+
+		plugin.startUp();
+
+		assertEquals("coins", configStore.get("itemList"));
+		assertEquals(ListType.BLACKLIST, configStore.get("listType"));
 	}
 }

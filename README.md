@@ -13,11 +13,25 @@ Allows you to block items from being alched
 
 ![Demo](https://i.imgur.com/1kXUiCm.gif)
 
+## Blacklist and whitelist
+
+A blacklist and a whitelist are both always active - the whitelist beats the blacklist, so it's
+the natural place to carve out exceptions. An "Unlisted items" setting decides what happens to an
+item that's on neither list: Allow (only the blacklist blocks) or Block (only the whitelist can
+alch). Right-click an inventory item while an alchemy spell is selected for a
+"Blacklist Alchemy"/"Whitelist Alchemy" option that moves it to the right list, or hold shift and
+left-click it to do the same thing without the menu.
+
+A `!` prefix on a line in either box always allows that item, overriding both lists and every
+helper rule below.
+
+If you're upgrading from an older version, your existing item list and list type are converted
+automatically the first time the new version runs - nothing to do on your end.
+
 ## Helper rules
 
-Besides the blacklist/whitelist item list, an optional "Helper rules" section (collapsed and off
-by default) can block whole kinds of item without listing them by name, on top of your list, in
-both list modes:
+Besides the blacklist/whitelist, an optional "Helper rules" section (collapsed and off by default)
+can block whole kinds of item without listing them by name, on top of both lists:
 
 - **Only allow noted items**
 - **Block untradeable items**
@@ -25,8 +39,8 @@ both list modes:
 - **Block items worth more on the GE** (with a configurable required profit and whether to count
   rune cost)
 
-A `!` prefix on an item list line always allows that item, overriding the list and every helper
-rule. Mage Training Arena reward items are always exempt from helper rules so the minigame keeps
+A `!` prefix on a list line always allows that item, overriding both lists and every helper rule.
+Mage Training Arena reward items are always exempt from helper rules so the minigame keeps
 working.
 
 ## Issues/Suggestions
