@@ -68,10 +68,21 @@ public interface AlchBlockerConfig extends Config
 	}
 
 	@ConfigItem(
+		keyName = "notedItemsOnly",
+		name = "Only allow noted items",
+		description = "Blocks every un-noted item from being alched, on top of the list below. Prefix a line with ! to exempt one item.",
+		position = 5
+	)
+	default boolean notedItemsOnly()
+	{
+		return false;
+	}
+
+	@ConfigItem(
 		keyName = "itemList",
 		name = "Item list",
 		description = "Configures the list of items to block or unblock from being alched. Format: (item), (item). Example: fire rune, prayer potion*. Prefix a line with ! to make an exception that overrides the other lines, e.g. *(4) then !prayer potion(4).",
-		position = 5
+		position = 6
 	)
 	default String itemList()
 	{

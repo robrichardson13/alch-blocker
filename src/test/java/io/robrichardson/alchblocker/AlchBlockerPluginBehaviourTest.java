@@ -21,6 +21,7 @@ import io.robrichardson.alchblocker.config.DisplayType;
 import io.robrichardson.alchblocker.config.ListType;
 import java.util.List;
 import net.runelite.api.Client;
+import net.runelite.api.ItemComposition;
 import net.runelite.api.KeyCode;
 import net.runelite.api.Menu;
 import net.runelite.api.MenuAction;
@@ -102,6 +103,13 @@ public class AlchBlockerPluginBehaviourTest
 		when(config.blockedItemAction()).thenReturn(BlockedItemAction.BLOCK);
 		when(config.shiftClickAddsToList()).thenReturn(false);
 		lenient().when(client.isKeyPressed(KeyCode.KC_SHIFT)).thenReturn(false);
+		when(config.notedItemsOnly()).thenReturn(false);
+		// Default every item id to "un-noted" unless a test says otherwise.
+		lenient().when(client.getItemDefinition(anyInt())).thenAnswer(inv -> {
+			ItemComposition comp = mock(ItemComposition.class);
+			when(comp.getNote()).thenReturn(-1);
+			return comp;
+		});
 
 		menuInput = mock(ChatboxTextMenuInput.class, withSettings().defaultAnswer(Mockito.RETURNS_SELF));
 		lenient().when(chatboxPanelManager.openTextMenuInput(anyString())).thenReturn(menuInput);
@@ -185,6 +193,13 @@ public class AlchBlockerPluginBehaviourTest
 		MenuEntry entry = mock(MenuEntry.class);
 		when(entry.getWidget()).thenReturn(widget);
 		return entry;
+	}
+
+	private void stubNoted(int itemId, boolean noted)
+	{
+		ItemComposition comp = mock(ItemComposition.class);
+		when(comp.getNote()).thenReturn(noted ? 799 : -1);
+		when(client.getItemDefinition(itemId)).thenReturn(comp);
 	}
 
 	@Test
@@ -722,5 +737,137 @@ public class AlchBlockerPluginBehaviourTest
 		opened.setMenuEntries(new MenuEntry[]{use});
 		plugin.onMenuOpened(opened);
 		verify(menu, never()).createMenuEntry(anyInt());
+	}
+
+	/** Issue #44: "only allow noted items" blocks an un-noted item the list itself would allow. */
+	@Test
+	public void notedOnlyBlocksUnnotedItemsThatTheListWouldAllow()
+	{
+		when(config.notedItemsOnly()).thenReturn(true);
+		selectSpell(highAlchSpell);
+		redrawInventory();
+
+		assertEquals("un-noted Bones must now be blocked even though it isn't on the list", 200, bones.opacity);
+		MenuOptionClicked click = alchClick(bones);
+		plugin.onMenuOptionClicked(click);
+		assertTrue(click.isConsumed());
+	}
+
+	@Test
+	public void notedOnlyLeavesNotedItemsAlchable()
+	{
+		when(config.notedItemsOnly()).thenReturn(true);
+		stubNoted(BONES, true);
+		selectSpell(highAlchSpell);
+		redrawInventory();
+
+		assertEquals(0, bones.opacity);
+		assertFalse(bones.hidden);
+		MenuOptionClicked click = alchClick(bones);
+		plugin.onMenuOptionClicked(click);
+		assertFalse(click.isConsumed());
+	}
+
+	@Test
+	public void notedOnlyAndsWithTheListInBothDirections()
+	{
+		when(config.notedItemsOnly()).thenReturn(true);
+
+		// WHITELIST with Bones listed but un-noted: still blocked, the list can't override the gate.
+		when(config.listType()).thenReturn(ListType.WHITELIST);
+		when(config.itemList()).thenReturn("bones");
+		plugin.onConfigChanged(configChanged("itemList"));
+		selectSpell(highAlchSpell);
+		redrawInventory();
+		assertEquals(200, bones.opacity);
+
+		// BLACKLIST with a noted item on the list: still blocked, the gate doesn't override the list.
+		when(config.listType()).thenReturn(ListType.BLACKLIST);
+		when(config.itemList()).thenReturn("bones");
+		plugin.onConfigChanged(configChanged("itemList"));
+		stubNoted(BONES, true);
+		redrawInventory();
+		assertEquals(200, bones.opacity);
+	}
+
+	/** Issue #17-style regression guard: flipping the toggle must not require a spell deselect. */
+	@Test
+	public void togglingNotedOnlyRestoresItemsImmediately()
+	{
+		when(config.notedItemsOnly()).thenReturn(true);
+		selectSpell(highAlchSpell);
+		redrawInventory();
+		assertEquals(200, bones.opacity);
+
+		when(config.notedItemsOnly()).thenReturn(false);
+		plugin.onConfigChanged(configChanged("notedItemsOnly"));
+
+		assertEquals("must be restored without needing a spell deselect", 0, bones.opacity);
+		assertFalse(bones.hidden);
+	}
+
+	/**
+	 * Amendment recorded on card #7 (designer2, following card #8): a "!" exclusion line is the one
+	 * thing that overrides a helper rule as well as the list, so notedItemsOnly is not an unescapable
+	 * dead end.
+	 */
+	@Test
+	public void bangExceptionOverridesTheNotedRule()
+	{
+		when(config.notedItemsOnly()).thenReturn(true);
+		when(config.itemList()).thenReturn("coins\n!bones");
+		plugin.onConfigChanged(configChanged("itemList"));
+		selectSpell(highAlchSpell);
+		redrawInventory();
+
+		assertEquals("a ! exclusion overrides the noted-only rule too", 0, bones.opacity);
+		assertFalse(bones.hidden);
+		MenuOptionClicked click = alchClick(bones);
+		plugin.onMenuOptionClicked(click);
+		assertFalse(click.isConsumed());
+	}
+
+	@Test
+	public void contextMenuOffersAlwaysAllowForAnItemBlockedOnlyByTheNotedRule()
+	{
+		when(config.notedItemsOnly()).thenReturn(true);
+		selectSpell(highAlchSpell);
+		redrawInventory();   // Bones is now blocked purely by the noted rule, not the list
+
+		MenuEntry created = mock(MenuEntry.class, withSettings().defaultAnswer(Mockito.RETURNS_SELF));
+		when(menu.createMenuEntry(anyInt())).thenReturn(created);
+
+		MenuOpened opened = new MenuOpened();
+		opened.setMenuEntries(new MenuEntry[]{alchEntry(bones, "Cast", "High Level Alchemy -> Bones")});
+		plugin.onMenuOpened(opened);
+
+		verify(created).setOption(contains("Always allow"));
+
+		ArgumentCaptor<java.util.function.Consumer<MenuEntry>> onClick = ArgumentCaptor.forClass(java.util.function.Consumer.class);
+		verify(created).onClick(onClick.capture());
+		onClick.getValue().accept(created);
+
+		verify(configManager).setConfiguration(eq(AlchBlockerConfig.GROUP), eq("itemList"), contains("!Bones"));
+	}
+
+	@Test
+	public void shiftClickOffersAlwaysAllowForAnItemBlockedOnlyByTheNotedRule()
+	{
+		when(config.notedItemsOnly()).thenReturn(true);
+		when(config.shiftClickAddsToList()).thenReturn(true);
+		when(client.isKeyPressed(KeyCode.KC_SHIFT)).thenReturn(true);
+		selectSpell(highAlchSpell);
+		redrawInventory();
+
+		MenuEntry created = mock(MenuEntry.class, withSettings().defaultAnswer(Mockito.RETURNS_SELF));
+		when(menu.createMenuEntry(-1)).thenReturn(created);
+		postMenuSort(itemMenuEntry(bones.widget));
+
+		verify(created).setOption(contains("Always allow"));
+		ArgumentCaptor<java.util.function.Consumer<MenuEntry>> onClick = ArgumentCaptor.forClass(java.util.function.Consumer.class);
+		verify(created).onClick(onClick.capture());
+		onClick.getValue().accept(created);
+
+		verify(configManager).setConfiguration(eq(AlchBlockerConfig.GROUP), eq("itemList"), contains("!Bones"));
 	}
 }

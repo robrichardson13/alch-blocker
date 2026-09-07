@@ -328,6 +328,17 @@ public class AlchBlockerPlugin extends Plugin
 
 		final String itemName = w.getName();
 		final String plainName = Text.removeTags(itemName).replace(' ', ' ').trim();
+		// Issue #44: same reasoning as onMenuOpened - a noted-only block needs a "!" exception, not
+		// a normal list edit that would silently do nothing.
+		if (isBlockedOnlyByNotedRule(w.getItemId(), plainName)) {
+			client.getMenu().createMenuEntry(-1)
+				.setOption("Always allow Alchemy")
+				.setTarget(itemName)
+				.setType(MenuAction.RUNELITE)
+				.onClick(e -> addToItemList("!" + plainName));
+			return;
+		}
+
 		final boolean listed = exactMatches.contains(plainName.toLowerCase());
 
 		client.getMenu().createMenuEntry(-1)
@@ -401,6 +412,21 @@ public class AlchBlockerPlugin extends Plugin
 				return;
 			}
 
+			final String itemName = w.getName();
+			final String plainItemName = Text.removeTags(itemName).replace('\u00A0', ' ').trim();
+
+			// Issue #44: a noted-only block can't be lifted by a normal list edit, so offer the one
+			// thing that actually works instead - a "!" exception (issue #36) - rather than a
+			// Blacklist/Whitelist entry that would silently do nothing.
+			if (isBlockedOnlyByNotedRule(itemId, plainItemName)) {
+				client.getMenu().createMenuEntry(idx)
+					.setOption("Always allow Alchemy")
+					.setTarget(itemName)
+					.setType(MenuAction.RUNELITE)
+					.onClick(e -> addToItemList("!" + plainItemName));
+				return;
+			}
+
 			// Item already in block list, no need to add menu item
 			if (
 				(hiddenItems.contains(itemId) && config.listType() == ListType.BLACKLIST) ||
@@ -408,9 +434,6 @@ public class AlchBlockerPlugin extends Plugin
 			) {
 				return;
 			}
-
-			final String itemName = w.getName();
-			final String plainItemName = Text.removeTags(itemName).replace('\u00A0', ' ').trim();
 
 			client.getMenu().createMenuEntry(idx)
 				.setOption(config.listType() == ListType.BLACKLIST ? "Blacklist Alchemy" : "Whitelist Alchemy")
@@ -454,8 +477,13 @@ public class AlchBlockerPlugin extends Plugin
 				shouldBlock = blockedItemCache.get(itemId);
 			} else {
 				String itemName = normalize(inventoryItem.getName());
-				boolean matchesPattern = isItemInBlockList(itemName);
-				shouldBlock = (config.listType() == ListType.BLACKLIST) == matchesPattern;
+				// A "!" line always wins: it keeps the item out of the list match (same as before
+				// issue #44) AND stops the noted-items-only rule from applying to it.
+				boolean excluded = isExcluded(itemName);
+				boolean matchesPattern = !excluded && matchesListPatterns(itemName);
+				boolean blockedByList = (config.listType() == ListType.BLACKLIST) == matchesPattern;
+				boolean blockedByNotedRule = !excluded && config.notedItemsOnly() && !isNoted(itemId);
+				shouldBlock = blockedByList || blockedByNotedRule;
 				blockedItemCache.put(itemId, shouldBlock);
 			}
 
@@ -470,16 +498,21 @@ public class AlchBlockerPlugin extends Plugin
 		}
 	}
 
-	private boolean isItemInBlockList(String itemName) {
-		// Exclusions ("!" prefix) are checked first and always win, regardless of list order.
+	/** Whether a "!" exclusion line matches this item name. Always wins, over the list and over any helper rule. */
+	private boolean isExcluded(String itemName) {
 		if (exactExclusions.contains(itemName)) {
-			return false;
+			return true;
 		}
 		for (String pattern : wildcardExclusions) {
 			if (WildcardMatcher.matches(pattern, itemName)) {
-				return false;
+				return true;
 			}
 		}
+		return false;
+	}
+
+	/** Whether a plain (non-exclusion) list line matches this item name. */
+	private boolean matchesListPatterns(String itemName) {
 		// O(1) lookup for exact matches
 		if (exactMatches.contains(itemName)) {
 			return true;
@@ -491,6 +524,16 @@ public class AlchBlockerPlugin extends Plugin
 			}
 		}
 		return false;
+	}
+
+	/** Issue #44: whether this item is noted. Un-noted items are blocked when notedItemsOnly is on. */
+	private boolean isNoted(int itemId) {
+		return itemId > -1 && client.getItemDefinition(itemId).getNote() != -1;
+	}
+
+	/** Issue #44: true when an item is blocked solely by the noted-only rule (not excluded, not on the list). */
+	private boolean isBlockedOnlyByNotedRule(int itemId, String plainName) {
+		return config.notedItemsOnly() && !isNoted(itemId) && !isExcluded(plainName.toLowerCase());
 	}
 
 	private void showBlockedItems() {
