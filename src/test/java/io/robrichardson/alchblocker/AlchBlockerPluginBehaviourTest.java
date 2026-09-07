@@ -5,6 +5,9 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.contains;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.mock;
@@ -13,13 +16,16 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.mockito.Mockito.withSettings;
 
+import io.robrichardson.alchblocker.config.BlockedItemAction;
 import io.robrichardson.alchblocker.config.DisplayType;
 import io.robrichardson.alchblocker.config.ListType;
+import java.util.List;
 import net.runelite.api.Client;
 import net.runelite.api.Menu;
 import net.runelite.api.MenuAction;
 import net.runelite.api.MenuEntry;
 import net.runelite.api.ScriptID;
+import net.runelite.api.events.GameTick;
 import net.runelite.api.events.MenuOpened;
 import net.runelite.api.events.MenuOptionClicked;
 import net.runelite.api.events.ScriptPostFired;
@@ -28,9 +34,12 @@ import net.runelite.api.widgets.Widget;
 import net.runelite.client.callback.ClientThread;
 import net.runelite.client.config.ConfigManager;
 import net.runelite.client.events.ConfigChanged;
+import net.runelite.client.game.chatbox.ChatboxPanelManager;
+import net.runelite.client.game.chatbox.ChatboxTextMenuInput;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.Mockito;
@@ -51,7 +60,10 @@ public class AlchBlockerPluginBehaviourTest
 	@Mock private ConfigManager configManager;
 	@Mock private AlchBlockerConfig config;
 	@Mock private Menu menu;
+	@Mock private ChatboxPanelManager chatboxPanelManager;
 	@InjectMocks private AlchBlockerPlugin plugin;
+
+	private ChatboxTextMenuInput menuInput;
 
 	/** Simple stateful stand-in for an inventory slot widget. */
 	private static class Slot
@@ -85,6 +97,14 @@ public class AlchBlockerPluginBehaviourTest
 		when(config.listType()).thenReturn(ListType.BLACKLIST);
 		when(config.displayType()).thenReturn(DisplayType.TRANSPARENT);
 		when(config.contextMenuEnabled()).thenReturn(true);
+		when(config.blockedItemAction()).thenReturn(BlockedItemAction.BLOCK);
+
+		menuInput = mock(ChatboxTextMenuInput.class, withSettings().defaultAnswer(Mockito.RETURNS_SELF));
+		lenient().when(chatboxPanelManager.openTextMenuInput(anyString())).thenReturn(menuInput);
+		lenient().when(chatboxPanelManager.getCurrentInput()).thenReturn(null);
+		Widget chatboxContainer = mock(Widget.class);
+		when(chatboxContainer.isHidden()).thenReturn(false);
+		lenient().when(chatboxPanelManager.getContainerWidget()).thenReturn(chatboxContainer);
 
 		coins = new Slot(InterfaceID.Inventory.ITEMS, COINS, "Coins");
 		bones = new Slot(InterfaceID.Inventory.ITEMS, BONES, "Bones");
@@ -121,6 +141,32 @@ public class AlchBlockerPluginBehaviourTest
 		when(entry.getWidget()).thenReturn(slot.widget);
 		when(entry.getItemId()).thenReturn(itemId);
 		return entry;
+	}
+
+	private void tick(int n)
+	{
+		for (int i = 0; i < n; i++)
+		{
+			plugin.onGameTick(new GameTick());
+		}
+	}
+
+	/** Finds the Runnable registered via menuInput.option(text, callback) whose text contains the given substring. */
+	private Runnable optionCallback(String textContains)
+	{
+		ArgumentCaptor<String> textCaptor = ArgumentCaptor.forClass(String.class);
+		ArgumentCaptor<Runnable> callbackCaptor = ArgumentCaptor.forClass(Runnable.class);
+		verify(menuInput, Mockito.atLeastOnce()).option(textCaptor.capture(), callbackCaptor.capture());
+		List<String> texts = textCaptor.getAllValues();
+		List<Runnable> callbacks = callbackCaptor.getAllValues();
+		for (int i = 0; i < texts.size(); i++)
+		{
+			if (texts.get(i).toLowerCase().contains(textContains.toLowerCase()))
+			{
+				return callbacks.get(i);
+			}
+		}
+		throw new AssertionError("No option registered containing: " + textContains + ", options were: " + texts);
 	}
 
 	@Test
@@ -331,6 +377,180 @@ public class AlchBlockerPluginBehaviourTest
 		change.setGroup(AlchBlockerConfig.GROUP);
 		change.setKey(key);
 		return change;
+	}
+
+	/** Issue #18: BLOCK is the default and must never open a chatbox prompt. */
+	@Test
+	public void blockModeConsumesClickAndNeverOpensAPrompt()
+	{
+		selectSpell(highAlchSpell);
+		redrawInventory();
+
+		MenuOptionClicked click = alchClick(coins);
+		plugin.onMenuOptionClicked(click);
+
+		assertTrue(click.isConsumed());
+		verify(chatboxPanelManager, never()).openTextMenuInput(anyString());
+	}
+
+	/** Issue #18: CONFIRM still swallows the first click but opens a chatbox prompt naming the item. */
+	@Test
+	public void confirmModeConsumesTheFirstClickAndOpensThePrompt()
+	{
+		when(config.blockedItemAction()).thenReturn(BlockedItemAction.CONFIRM);
+		selectSpell(highAlchSpell);
+		redrawInventory();
+
+		MenuOptionClicked click = alchClick(coins);
+		plugin.onMenuOptionClicked(click);
+
+		assertTrue(click.isConsumed());
+		verify(chatboxPanelManager).openTextMenuInput(contains("Coins"));
+		optionCallback("cast this once");
+		optionCallback("don't cast");
+	}
+
+	/** Issue #18: confirming "cast this once" reveals the item and its very next click goes through. */
+	@Test
+	public void choosingCastOnceRevealsTheItemAndLetsTheNextClickThrough()
+	{
+		when(config.blockedItemAction()).thenReturn(BlockedItemAction.CONFIRM);
+		selectSpell(highAlchSpell);
+		redrawInventory();
+
+		plugin.onMenuOptionClicked(alchClick(coins));
+		optionCallback("cast this once").run();
+
+		assertEquals("item must be revealed once allowed", 0, coins.opacity);
+		assertFalse(coins.hidden);
+
+		MenuOptionClicked secondClick = alchClick(coins);
+		plugin.onMenuOptionClicked(secondClick);
+		assertFalse("the confirmed click must go through untouched", secondClick.isConsumed());
+	}
+
+	/** Issue #18: HIDDEN display type must also un-hide the item once allowed, not just un-dim it. */
+	@Test
+	public void choosingCastOnceRevealsAHiddenItemToo()
+	{
+		when(config.blockedItemAction()).thenReturn(BlockedItemAction.CONFIRM);
+		when(config.displayType()).thenReturn(DisplayType.HIDDEN);
+		selectSpell(highAlchSpell);
+		redrawInventory();
+		assertTrue(coins.hidden);
+
+		plugin.onMenuOptionClicked(alchClick(coins));
+		optionCallback("cast this once").run();
+
+		assertFalse(coins.hidden);
+	}
+
+	/** Issue #18: the allowance is single-use; the item is blocked again immediately after the cast. */
+	@Test
+	public void allowanceIsSingleUseAndTheItemIsBlockedAgainAfterTheCast()
+	{
+		when(config.blockedItemAction()).thenReturn(BlockedItemAction.CONFIRM);
+		selectSpell(highAlchSpell);
+		redrawInventory();
+
+		plugin.onMenuOptionClicked(alchClick(coins));
+		optionCallback("cast this once").run();
+		plugin.onMenuOptionClicked(alchClick(coins));   // the confirmed cast itself
+
+		redrawInventory();
+		assertEquals("item must be blocked again after the one-shot cast", 200, coins.opacity);
+
+		MenuOptionClicked thirdClick = alchClick(coins);
+		plugin.onMenuOptionClicked(thirdClick);
+		assertTrue("a further click must be blocked (and re-prompt)", thirdClick.isConsumed());
+	}
+
+	/** Issue #18: an unused allowance expires after 30 ticks so it can't be banked indefinitely. */
+	@Test
+	public void allowanceExpiresAfterThirtyTicksWithoutACast()
+	{
+		when(config.blockedItemAction()).thenReturn(BlockedItemAction.CONFIRM);
+		selectSpell(highAlchSpell);
+		redrawInventory();
+
+		plugin.onMenuOptionClicked(alchClick(coins));
+		optionCallback("cast this once").run();
+		assertEquals(0, coins.opacity);
+
+		tick(31);
+		redrawInventory();
+		assertEquals("allowance must have expired", 200, coins.opacity);
+
+		MenuOptionClicked click = alchClick(coins);
+		plugin.onMenuOptionClicked(click);
+		assertTrue(click.isConsumed());
+	}
+
+	/**
+	 * Issue #18: cancelling leaves the item blocked and writes nothing to config. Also guards the
+	 * ClientThread ordering trap: ChatboxTextMenuInput runs the chosen option's callback, THEN (via
+	 * an invokeLater close) onClose - so onClose must only clear the "prompt open" guard and must
+	 * never wipe an allowance the option callback just granted.
+	 */
+	@Test
+	public void choosingCancelLeavesTheItemBlockedAndOnCloseDoesNotClearAGrantedAllowance()
+	{
+		when(config.blockedItemAction()).thenReturn(BlockedItemAction.CONFIRM);
+		selectSpell(highAlchSpell);
+		redrawInventory();
+
+		plugin.onMenuOptionClicked(alchClick(coins));
+		optionCallback("don't cast").run();
+
+		verify(configManager, never()).setConfiguration(any(), any(), any());
+		redrawInventory();
+		assertEquals(200, coins.opacity);
+		MenuOptionClicked click = alchClick(coins);
+		plugin.onMenuOptionClicked(click);
+		assertTrue(click.isConsumed());
+
+		// Real order: the "cast once" callback runs first and grants the allowance, THEN onClose
+		// fires (deferred). onClose must not clear that allowance.
+		ArgumentCaptor<Runnable> onCloseCaptor = ArgumentCaptor.forClass(Runnable.class);
+		plugin.onMenuOptionClicked(alchClick(coins));
+		optionCallback("cast this once").run();
+		verify(menuInput, Mockito.atLeastOnce()).onClose(onCloseCaptor.capture());
+		onCloseCaptor.getValue().run();
+
+		assertEquals("allowance must survive onClose", 0, coins.opacity);
+		assertFalse(coins.hidden);
+	}
+
+	/** Issue #18: "always allow" edits the item list - a plain append in WHITELIST mode, a "!" exclusion in BLACKLIST mode. */
+	@Test
+	public void alwaysAllowAppendsAnExclusionLineInBlacklistMode()
+	{
+		when(config.blockedItemAction()).thenReturn(BlockedItemAction.CONFIRM);
+		when(config.itemList()).thenReturn("coins");
+		plugin.onConfigChanged(configChanged("itemList"));
+		selectSpell(highAlchSpell);
+		redrawInventory();
+
+		plugin.onMenuOptionClicked(alchClick(coins));
+		optionCallback("always allow").run();
+
+		verify(configManager).setConfiguration(eq(AlchBlockerConfig.GROUP), eq("itemList"), contains("!Coins"));
+	}
+
+	@Test
+	public void alwaysAllowAppendsAPlainLineInWhitelistMode()
+	{
+		when(config.blockedItemAction()).thenReturn(BlockedItemAction.CONFIRM);
+		when(config.listType()).thenReturn(ListType.WHITELIST);
+		when(config.itemList()).thenReturn("bones");
+		plugin.onConfigChanged(configChanged("itemList"));
+		selectSpell(highAlchSpell);
+		redrawInventory();
+
+		plugin.onMenuOptionClicked(alchClick(coins));
+		optionCallback("always allow").run();
+
+		verify(configManager).setConfiguration(eq(AlchBlockerConfig.GROUP), eq("itemList"), contains("Coins"));
 	}
 
 	@Test

@@ -1,5 +1,6 @@
 package io.robrichardson.alchblocker;
 
+import io.robrichardson.alchblocker.config.BlockedItemAction;
 import io.robrichardson.alchblocker.config.DisplayType;
 import io.robrichardson.alchblocker.config.ListType;
 import net.runelite.client.config.Config;
@@ -45,10 +46,21 @@ public interface AlchBlockerConfig extends Config
 	}
 
 	@ConfigItem(
+		keyName = "blockedItemAction",
+		name = "When a blocked item is clicked",
+		description = "Block: the click is silently ignored (default). Confirm: a chatbox prompt asks whether to cast anyway; if you confirm, your next click on that item goes through once.",
+		position = 3
+	)
+	default BlockedItemAction blockedItemAction()
+	{
+		return BlockedItemAction.BLOCK;
+	}
+
+	@ConfigItem(
 		keyName = "itemList",
 		name = "Item list",
 		description = "Configures the list of items to block or unblock from being alched. Format: (item), (item). Example: fire rune, prayer potion*. Prefix a line with ! to make an exception that overrides the other lines, e.g. *(4) then !prayer potion(4).",
-		position = 3
+		position = 4
 	)
 	default String itemList()
 	{

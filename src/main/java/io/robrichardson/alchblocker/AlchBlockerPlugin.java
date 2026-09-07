@@ -13,13 +13,16 @@ import javax.inject.Inject;
 
 import com.google.inject.Provides;
 
+import io.robrichardson.alchblocker.config.BlockedItemAction;
 import io.robrichardson.alchblocker.config.DisplayType;
 import io.robrichardson.alchblocker.config.ListType;
 import lombok.extern.slf4j.Slf4j;
+import net.runelite.api.ChatMessageType;
 import net.runelite.api.Client;
 import net.runelite.api.MenuAction;
 import net.runelite.api.MenuEntry;
 import net.runelite.api.ScriptID;
+import net.runelite.api.events.GameTick;
 import net.runelite.api.events.MenuOpened;
 import net.runelite.api.events.MenuOptionClicked;
 import net.runelite.api.events.ScriptPostFired;
@@ -31,6 +34,8 @@ import net.runelite.client.callback.ClientThread;
 import net.runelite.client.config.ConfigManager;
 import net.runelite.client.eventbus.Subscribe;
 import net.runelite.client.events.ConfigChanged;
+import net.runelite.client.game.chatbox.ChatboxPanelManager;
+import net.runelite.client.game.chatbox.ChatboxTextMenuInput;
 import net.runelite.client.plugins.Plugin;
 import net.runelite.client.plugins.PluginDescriptor;
 import net.runelite.client.util.Text;
@@ -54,6 +59,9 @@ public class AlchBlockerPlugin extends Plugin
 	@Inject
 	private AlchBlockerConfig config;
 
+	@Inject
+	private ChatboxPanelManager chatboxPanelManager;
+
 	Set<String> exactMatches = new HashSet<>();
 	List<String> wildcardPatterns = new ArrayList<>();
 	Set<String> exactExclusions = new HashSet<>();
@@ -69,6 +77,15 @@ public class AlchBlockerPlugin extends Plugin
 
 	private static final int BLOCKED_OPACITY = 200;
 
+	/** How long a "cast this once" confirmation stays usable before it expires unused (issue #18). */
+	private static final int ALLOWANCE_TICKS = 30;
+
+	/** Item id the user just confirmed via the CONFIRM prompt; -1 when there is no live allowance. */
+	private int allowedItemId = -1;
+	private int allowanceTicksRemaining = 0;
+	/** True between opening our chatbox prompt and its onClose, so a spam-click can't reopen it. */
+	private boolean promptOpen = false;
+
 	@Override
 	protected void startUp() throws Exception {
 		parseItemList();
@@ -76,6 +93,7 @@ public class AlchBlockerPlugin extends Plugin
 
 	@Override
 	protected void shutDown() throws Exception {
+		clearAllowance();
 		clientThread.invoke(this::showBlockedItems);
 	}
 
@@ -89,6 +107,7 @@ public class AlchBlockerPlugin extends Plugin
 		if (!AlchBlockerConfig.GROUP.equals(event.getGroup())) return;
 		parseItemList();
 		blockedItemCache.clear();
+		clearAllowance();
 		// Restore everything first so a display type change mid-alch doesn't leave items
 		// stuck with the old display type's opacity/hidden state (issue #17), then re-apply.
 		clientThread.invokeAtTickEnd(() -> {
@@ -101,8 +120,19 @@ public class AlchBlockerPlugin extends Plugin
 	public void onMenuOptionClicked(MenuOptionClicked event) {
 		MenuEntry entry = event.getMenuEntry();
 		// did you just click an item to try to alch it (spell on an inventory item, or an explorer's ring slot)
-		if (isAlchOnItemEntry(entry) && hiddenItems.contains(getEntryItemId(entry))) {
-			event.consume();
+		if (isAlchOnItemEntry(entry)) {
+			int itemId = getEntryItemId(entry);
+
+			if (itemId == allowedItemId) {
+				// The user's own click on the item they just confirmed. Let it through untouched
+				// (never synthesise or replay a click) and burn the one-shot allowance.
+				clearAllowance();
+			} else if (hiddenItems.contains(itemId)) {
+				event.consume();
+				if (config.blockedItemAction() == BlockedItemAction.CONFIRM) {
+					promptForBlockedItem(entry, itemId);
+				}
+			}
 		}
 		// Check spell state after any click (handles clicking blank spot to cancel)
 		clientThread.invokeAtTickEnd(this::updateItemVisibility);
@@ -114,6 +144,84 @@ public class AlchBlockerPlugin extends Plugin
 			// Use invokeAtTickEnd to check spell selection after the client state is updated
 			clientThread.invokeAtTickEnd(this::updateItemVisibility);
 		}
+	}
+
+	@Subscribe
+	public void onGameTick(GameTick event) {
+		if (allowedItemId != -1 && --allowanceTicksRemaining <= 0) {
+			clearAllowance();
+			clientThread.invokeAtTickEnd(this::refreshItemVisibility);
+		}
+	}
+
+	/**
+	 * Opens a chatbox confirmation for a blocked item (issue #18). Never synthesises input: this
+	 * only decides whether the user's own *next* click on the item will be let through.
+	 */
+	private void promptForBlockedItem(MenuEntry entry, int itemId) {
+		if (promptOpen || chatboxPanelManager.getCurrentInput() != null) {
+			// Our prompt is already open, or another plugin owns the chatbox: stay silent rather
+			// than fighting for the panel.
+			return;
+		}
+
+		Widget container = chatboxPanelManager.getContainerWidget();
+		if (container == null || container.isHidden()) {
+			sendBlockedChatMessage();
+			return;
+		}
+
+		Widget w = entry.getWidget();
+		final String name = w != null && w.getName() != null
+			? Text.removeTags(w.getName()).replace(' ', ' ').trim()
+			: "this item";
+		promptOpen = true;
+
+		ChatboxTextMenuInput input = chatboxPanelManager
+			.openTextMenuInput("Alch Blocker: cast " + name + "?")
+			.option("1. No, don't cast", () -> { })
+			.option("2. Yes, cast this once", () -> grantAllowance(itemId))
+			.option("3. Yes, and always allow " + name, () -> {
+				permanentlyAllow(name);
+				grantAllowance(itemId);
+			});
+
+		// Ordering trap: ChatboxTextMenuInput.callback() calls chatboxPanelManager.close() (which is
+		// invokeLater, so deferred) and only then runs the chosen option's callback inline. That
+		// means onClose fires AFTER the option callback, not before. onClose must therefore only
+		// reset the "prompt is open" guard - never touch the allowance the option callback may have
+		// just granted, or it would be wiped immediately after being handed out.
+		input.onClose(() -> promptOpen = false).build();
+	}
+
+	private void grantAllowance(int itemId) {
+		allowedItemId = itemId;
+		allowanceTicksRemaining = ALLOWANCE_TICKS;
+		clientThread.invoke(this::refreshItemVisibility);
+	}
+
+	private void clearAllowance() {
+		allowedItemId = -1;
+		allowanceTicksRemaining = 0;
+	}
+
+	/** Full restore-then-reapply, same pattern as onConfigChanged uses for issue #17. */
+	private void refreshItemVisibility() {
+		showBlockedItems();
+		updateItemVisibility();
+	}
+
+	/** Edits the item list so this item is always alchable from now on. */
+	private void permanentlyAllow(String name) {
+		// WHITELIST: append the item so it now matches the allow-list. BLACKLIST: append a "!"
+		// exclusion (issue #36) so it works uniformly whether the item is exactly listed or only
+		// caught by a wildcard, without deleting or narrowing the pattern for every other item.
+		String line = config.listType() == ListType.WHITELIST ? name : "!" + name;
+		configManager.setConfiguration(AlchBlockerConfig.GROUP, "itemList", config.itemList().concat("\n" + line));
+	}
+
+	private void sendBlockedChatMessage() {
+		client.addChatMessage(ChatMessageType.GAMEMESSAGE, "", "Alch Blocker blocked that item.", null);
 	}
 
 	private void updateItemVisibility() {
@@ -182,6 +290,7 @@ public class AlchBlockerPlugin extends Plugin
 	@Subscribe
 	public void onWidgetClosed(WidgetClosed event) {
 		if (event.getGroupId() == EXPLORERS_RING_GROUP_ID) {
+			clearAllowance();
 			showBlockedItems();
 		}
 	}
@@ -204,6 +313,11 @@ public class AlchBlockerPlugin extends Plugin
 
 			final Widget w = entry.getWidget();
 			final int itemId = w.getItemId();
+
+			// A live CONFIRM allowance already lets this item through; don't offer to edit the list.
+			if (itemId == allowedItemId) {
+				return;
+			}
 
 			// Item already in block list, no need to add menu item
 			if (
@@ -245,6 +359,16 @@ public class AlchBlockerPlugin extends Plugin
 
 		for (Widget inventoryItem : Objects.requireNonNull(inventory.getChildren())) {
 			int itemId = inventoryItem.getItemId();
+
+			if (itemId == allowedItemId) {
+				// Confirmed via the CONFIRM prompt: must look and behave like a normal item so the
+				// user's next click actually reaches it.
+				inventoryItem.setOpacity(0);
+				inventoryItem.setHidden(false);
+				hiddenItems.remove(itemId);
+				continue;
+			}
+
 			boolean shouldBlock;
 
 			// Check cache first for O(1) lookup
