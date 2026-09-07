@@ -58,21 +58,10 @@ public interface AlchBlockerConfig extends Config
 		return BlockedItemAction.BLOCK;
 	}
 
-	@ConfigItem(
-		keyName = "shiftClickAddsToList",
-		name = "Shift-click adds to item list",
-		description = "Hold shift and left-click an inventory item to add its exact name to the item list (shift-click again to remove it). Off by default: conflicts with Menu Entry Swapper's shift-click drop.",
-		position = 4
-	)
-	default boolean shiftClickAddsToList()
-	{
-		return false;
-	}
-
 	@ConfigSection(
 		name = "Item lists",
 		description = "One item per line; * is a wildcard. The whitelist beats the blacklist. A line starting with ! beats everything, including helper rules - it always allows that item no matter which box it's in.",
-		position = 5
+		position = 4
 	)
 	String itemLists = "itemLists";
 
@@ -81,7 +70,7 @@ public interface AlchBlockerConfig extends Config
 		name = "Blacklist",
 		description = "Items here cannot be alched. One per line, * wildcards allowed. Prefix a line with ! to always allow that item instead, overriding everything.",
 		section = "itemLists",
-		position = 6
+		position = 5
 	)
 	default String blacklist()
 	{
@@ -93,7 +82,7 @@ public interface AlchBlockerConfig extends Config
 		name = "Whitelist",
 		description = "Items here can be alched even if the blacklist blocks them. One per line, * wildcards allowed. Prefix a line with ! to always allow that item, overriding everything.",
 		section = "itemLists",
-		position = 7
+		position = 6
 	)
 	default String whitelist()
 	{
@@ -103,7 +92,7 @@ public interface AlchBlockerConfig extends Config
 	@ConfigSection(
 		name = "Helper rules",
 		description = "Block whole kinds of item without listing them by name. These apply on top of your list above, in both Blacklist and Whitelist mode - the only thing that overrides them is a ! line in the item list. Mage Training Arena items are always exempt. All off by default.",
-		position = 10,
+		position = 7,
 		closedByDefault = true
 	)
 	String helperRules = "helperRules";
@@ -113,7 +102,7 @@ public interface AlchBlockerConfig extends Config
 		name = "Only allow noted items",
 		description = "Blocks every un-noted item. Prefix a line with ! to always allow one item.",
 		section = "helperRules",
-		position = 11
+		position = 8
 	)
 	default boolean notedItemsOnly()
 	{
@@ -125,7 +114,7 @@ public interface AlchBlockerConfig extends Config
 		name = "Block untradeable items",
 		description = "Blocks items that cannot be traded or sold, since they usually cannot be replaced. Noted items are treated as tradeable if the unnoted item is.",
 		section = "helperRules",
-		position = 12
+		position = 9
 	)
 	default boolean blockUntradeable()
 	{
@@ -138,7 +127,7 @@ public interface AlchBlockerConfig extends Config
 		name = "Minimum alch value",
 		description = "Blocks items whose alch value is below this many coins. 0 turns the rule off.",
 		section = "helperRules",
-		position = 13
+		position = 10
 	)
 	default int minAlchValue()
 	{
@@ -150,7 +139,7 @@ public interface AlchBlockerConfig extends Config
 		name = "Block items worth more on the GE",
 		description = "Blocks items whose alch value is less than what they sell for on the Grand Exchange after tax. Uses the two settings below.",
 		section = "helperRules",
-		position = 14
+		position = 11
 	)
 	default boolean blockAlchLoss()
 	{
@@ -163,7 +152,7 @@ public interface AlchBlockerConfig extends Config
 		name = "Required profit",
 		description = "Only used when 'Block items worth more on the GE' is on. The alch must beat the GE price by at least this many coins. Negative values tolerate a loss of that size.",
 		section = "helperRules",
-		position = 15
+		position = 12
 	)
 	default int alchProfitMargin()
 	{
@@ -175,10 +164,21 @@ public interface AlchBlockerConfig extends Config
 		name = "Count rune cost",
 		description = "Only used when 'Block items worth more on the GE' is on. Adds the price of 1 nature and 5 fire runes to the threshold. Turn this off if you alch with a fire staff. Explorer's ring casts never count rune cost.",
 		section = "helperRules",
-		position = 16
+		position = 13
 	)
 	default boolean includeRuneCost()
 	{
 		return true;
+	}
+
+	@ConfigItem(
+		keyName = "shiftClickAddsToList",
+		name = "Shift-click adds to item list",
+		description = "Hold shift and left-click an inventory item to add its exact name to the item list (shift-click again to remove it). Off by default: conflicts with Menu Entry Swapper's shift-click drop.",
+		position = 14
+	)
+	default boolean shiftClickAddsToList()
+	{
+		return false;
 	}
 }
