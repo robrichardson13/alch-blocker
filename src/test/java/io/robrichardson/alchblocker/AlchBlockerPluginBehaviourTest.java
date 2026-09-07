@@ -20,13 +20,16 @@ import io.robrichardson.alchblocker.config.BlockedItemAction;
 import io.robrichardson.alchblocker.config.DisplayType;
 import io.robrichardson.alchblocker.config.ListType;
 import java.util.List;
+import net.runelite.api.ChatMessageType;
 import net.runelite.api.Client;
+import net.runelite.api.GameState;
 import net.runelite.api.ItemComposition;
 import net.runelite.api.KeyCode;
 import net.runelite.api.Menu;
 import net.runelite.api.MenuAction;
 import net.runelite.api.MenuEntry;
 import net.runelite.api.ScriptID;
+import net.runelite.api.events.GameStateChanged;
 import net.runelite.api.events.GameTick;
 import net.runelite.api.events.MenuOpened;
 import net.runelite.api.events.MenuOptionClicked;
@@ -332,7 +335,11 @@ public class AlchBlockerPluginBehaviourTest
 		assertTrue("blocked item's alch click must be consumed", combatClick.isConsumed());
 	}
 
-	/** Issue #36: exclusion polarity flips correctly under WHITELIST too. */
+	/**
+	 * Card #4 decision: a "!" line means "always allow this item" in BOTH list modes - it is not
+	 * "excluded from list matching". In WHITELIST mode a "!" line must still permit alching, even
+	 * though the plain wildcard pattern it overrides would otherwise have matched the item too.
+	 */
 	@Test
 	public void exclusionOverridesWildcardInWhitelistMode()
 	{
@@ -347,7 +354,7 @@ public class AlchBlockerPluginBehaviourTest
 		selectSpell(highAlchSpell);
 		redrawInventory();
 
-		assertEquals("prayer potion excluded from the whitelisted set, so it is blocked", 200, prayerPotion.opacity);
+		assertEquals("a \"!\" line always allows, even in WHITELIST mode", 0, prayerPotion.opacity);
 		assertEquals("super combat potion is whitelisted via the wildcard, so it stays alchable", 0, superCombat.opacity);
 	}
 
@@ -554,7 +561,11 @@ public class AlchBlockerPluginBehaviourTest
 		assertFalse(coins.hidden);
 	}
 
-	/** Issue #18: "always allow" edits the item list - a plain append in WHITELIST mode, a "!" exclusion in BLACKLIST mode. */
+	/**
+	 * Issue #18 / card #4 decision: "always allow" edits the item list with a "!" exclusion line in
+	 * BOTH list modes - a "!" line means "always allow this item" regardless of listType, not
+	 * "excluded from list matching".
+	 */
 	@Test
 	public void alwaysAllowAppendsAnExclusionLineInBlacklistMode()
 	{
@@ -571,7 +582,7 @@ public class AlchBlockerPluginBehaviourTest
 	}
 
 	@Test
-	public void alwaysAllowAppendsAPlainLineInWhitelistMode()
+	public void alwaysAllowAppendsAnExclusionLineInWhitelistModeToo()
 	{
 		when(config.blockedItemAction()).thenReturn(BlockedItemAction.CONFIRM);
 		when(config.listType()).thenReturn(ListType.WHITELIST);
@@ -583,7 +594,7 @@ public class AlchBlockerPluginBehaviourTest
 		plugin.onMenuOptionClicked(alchClick(coins));
 		optionCallback("always allow").run();
 
-		verify(configManager).setConfiguration(eq(AlchBlockerConfig.GROUP), eq("itemList"), contains("Coins"));
+		verify(configManager).setConfiguration(eq(AlchBlockerConfig.GROUP), eq("itemList"), contains("!Coins"));
 	}
 
 	/** Rob's ask: shift-click an inventory item to add its raw name to the item list. */
@@ -869,5 +880,184 @@ public class AlchBlockerPluginBehaviourTest
 		onClick.getValue().accept(created);
 
 		verify(configManager).setConfiguration(eq(AlchBlockerConfig.GROUP), eq("itemList"), contains("!Bones"));
+	}
+
+	/**
+	 * Review finding #1 (card #4): {@code PostMenuSort} keeps firing while a menu is open and the
+	 * entry array is not rebuilt, so without a guard the plugin appends a duplicate entry on every
+	 * fire. Both core call sites ({@code MenuEntrySwapperPlugin}, {@code OverlayRenderer}) guard on
+	 * {@code client.isMenuOpen()} for this exact reason.
+	 */
+	@Test
+	public void postMenuSortIgnoredWhileMenuIsOpenToAvoidDuplicateEntries()
+	{
+		when(config.shiftClickAddsToList()).thenReturn(true);
+		when(client.isKeyPressed(KeyCode.KC_SHIFT)).thenReturn(true);
+		when(client.isMenuOpen()).thenReturn(true);
+
+		postMenuSort(itemMenuEntry(bones.widget));
+		postMenuSort(itemMenuEntry(bones.widget));
+
+		verify(menu, never()).createMenuEntry(anyInt());
+	}
+
+	/**
+	 * Review finding #3 (card #4): {@code isBlockedOnlyByNotedRule} must check that the list itself
+	 * would have allowed the item. In WHITELIST mode every unlisted item is already list-blocked, so
+	 * an un-noted, unlisted item is blocked by the list AND the noted rule - the noted-only escape
+	 * hatch must not hijack the normal "Whitelist Alchemy" entry in that case.
+	 */
+	@Test
+	public void notedRuleDoesNotHijackTheWhitelistMenuEntryWhenTheListAlsoBlocksTheItem()
+	{
+		when(config.listType()).thenReturn(ListType.WHITELIST);
+		when(config.notedItemsOnly()).thenReturn(true);
+		when(config.itemList()).thenReturn("");
+		plugin.onConfigChanged(configChanged("itemList"));
+		selectSpell(highAlchSpell);
+		redrawInventory();
+		assertEquals("bones is blocked by both the list and the noted rule", 200, bones.opacity);
+
+		MenuEntry created = mock(MenuEntry.class, withSettings().defaultAnswer(Mockito.RETURNS_SELF));
+		when(menu.createMenuEntry(anyInt())).thenReturn(created);
+		MenuOpened opened = new MenuOpened();
+		opened.setMenuEntries(new MenuEntry[]{alchEntry(bones, "Cast", "High Level Alchemy -> Bones")});
+		plugin.onMenuOpened(opened);
+
+		verify(created).setOption("Whitelist Alchemy");
+	}
+
+	/**
+	 * Review finding #2 (card #4) and the binding decision: a "!" line means "always allow" in BOTH
+	 * list modes, not "excluded from list matching". "Always allow Alchemy" in WHITELIST mode plus
+	 * notedItemsOnly must actually make the item alchable, not leave it silently blocked.
+	 */
+	@Test
+	public void alwaysAllowActuallyUnblocksTheItemInWhitelistModeWithNotedItemsOnly()
+	{
+		when(config.listType()).thenReturn(ListType.WHITELIST);
+		when(config.notedItemsOnly()).thenReturn(true);
+		// Bones is already whitelisted (the list itself would allow it), so it is blocked ONLY by
+		// the noted-only rule - this is what makes "Always allow Alchemy" the offered entry.
+		when(config.itemList()).thenReturn("bones");
+		plugin.onConfigChanged(configChanged("itemList"));
+		selectSpell(highAlchSpell);
+		redrawInventory();
+		assertEquals(200, bones.opacity);
+
+		MenuEntry created = mock(MenuEntry.class, withSettings().defaultAnswer(Mockito.RETURNS_SELF));
+		when(menu.createMenuEntry(anyInt())).thenReturn(created);
+		MenuOpened opened = new MenuOpened();
+		opened.setMenuEntries(new MenuEntry[]{alchEntry(bones, "Cast", "High Level Alchemy -> Bones")});
+		plugin.onMenuOpened(opened);
+		verify(created).setOption(contains("Always allow"));
+
+		ArgumentCaptor<java.util.function.Consumer<MenuEntry>> onClick = ArgumentCaptor.forClass(java.util.function.Consumer.class);
+		verify(created).onClick(onClick.capture());
+		ArgumentCaptor<String> written = ArgumentCaptor.forClass(String.class);
+		onClick.getValue().accept(created);
+		verify(configManager).setConfiguration(eq(AlchBlockerConfig.GROUP), eq("itemList"), written.capture());
+
+		when(config.itemList()).thenReturn(written.getValue());
+		plugin.onConfigChanged(configChanged("itemList"));
+		redrawInventory();
+
+		assertEquals("the item must now actually be alchable", 0, bones.opacity);
+		assertFalse(bones.hidden);
+	}
+
+	/**
+	 * Review finding #4 (card #4): {@code shutDown} must reset the prompt-open guard and close any
+	 * open panel, or a plugin disable/re-enable (or profile switch) while the CONFIRM prompt is open
+	 * permanently disables CONFIRM until a client restart.
+	 */
+	@Test
+	public void shutDownResetsThePromptGuardAndClosesAnOpenPanel() throws Exception
+	{
+		when(config.blockedItemAction()).thenReturn(BlockedItemAction.CONFIRM);
+		selectSpell(highAlchSpell);
+		redrawInventory();
+
+		plugin.onMenuOptionClicked(alchClick(coins));
+		verify(chatboxPanelManager).openTextMenuInput(anyString());
+
+		plugin.shutDown();
+		verify(chatboxPanelManager).close();
+
+		plugin.startUp();
+		selectSpell(highAlchSpell);
+		redrawInventory();
+		plugin.onMenuOptionClicked(alchClick(coins));
+
+		verify(chatboxPanelManager, Mockito.times(2)).openTextMenuInput(anyString());
+	}
+
+	/**
+	 * Review finding #5 (card #4): {@code allowedItemId} is -1 when there is no live allowance, and
+	 * an empty inventory slot's item id is also -1, so without a sentinel guard every empty slot is
+	 * treated as "the confirmed item" and force-unhidden - clobbering whatever another plugin did
+	 * with that slot.
+	 */
+	@Test
+	public void emptyInventorySlotIsNotTreatedAsAnAllowedItemWhenNoAllowanceIsLive()
+	{
+		Slot emptySlot = new Slot(InterfaceID.Inventory.ITEMS, -1, "");
+		emptySlot.hidden = true; // simulate another plugin managing this slot
+		inventoryOf(coins, emptySlot);
+
+		selectSpell(highAlchSpell);
+		redrawInventory();
+
+		assertTrue("empty slot must not be force-unhidden by the -1/-1 sentinel match", emptySlot.hidden);
+	}
+
+	/**
+	 * Review finding #6 (card #4): card #2's spec calls the fallback chat message "rate-limited to
+	 * once per allowance window". Alching is a spam-click activity, so without rate limiting every
+	 * blocked click spams "Alch Blocker blocked that item." while the chatbox is unavailable.
+	 */
+	@Test
+	public void fallbackChatMessageIsRateLimitedWhenTheChatboxIsUnavailable()
+	{
+		when(config.blockedItemAction()).thenReturn(BlockedItemAction.CONFIRM);
+		Widget chatboxContainer = mock(Widget.class);
+		when(chatboxContainer.isHidden()).thenReturn(true);
+		when(chatboxPanelManager.getContainerWidget()).thenReturn(chatboxContainer);
+		selectSpell(highAlchSpell);
+		redrawInventory();
+
+		plugin.onMenuOptionClicked(alchClick(coins));
+		plugin.onMenuOptionClicked(alchClick(coins));
+		plugin.onMenuOptionClicked(alchClick(coins));
+
+		verify(client, Mockito.times(1))
+			.addChatMessage(eq(ChatMessageType.GAMEMESSAGE), anyString(), anyString(), any());
+	}
+
+	/**
+	 * Recommended cleanup (card #4): a live allowance and the prompt-open guard must not survive a
+	 * logout or world hop, since {@code GameTick} does not fire on the login screen.
+	 */
+	@Test
+	public void gameStateChangeToLoginScreenClearsTheAllowanceAndPromptGuard()
+	{
+		when(config.blockedItemAction()).thenReturn(BlockedItemAction.CONFIRM);
+		selectSpell(highAlchSpell);
+		redrawInventory();
+
+		plugin.onMenuOptionClicked(alchClick(coins));
+		optionCallback("cast this once").run();
+		assertEquals("allowance granted", 0, coins.opacity);
+
+		GameStateChanged event = new GameStateChanged();
+		event.setGameState(GameState.LOGIN_SCREEN);
+		plugin.onGameStateChanged(event);
+
+		redrawInventory();
+		assertEquals("allowance must be cleared on logout", 200, coins.opacity);
+
+		// The prompt guard must also be clear, so CONFIRM works again after logging back in.
+		plugin.onMenuOptionClicked(alchClick(coins));
+		verify(chatboxPanelManager, Mockito.times(2)).openTextMenuInput(anyString());
 	}
 }

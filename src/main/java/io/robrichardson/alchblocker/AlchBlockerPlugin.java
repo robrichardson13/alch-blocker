@@ -19,10 +19,12 @@ import io.robrichardson.alchblocker.config.ListType;
 import lombok.extern.slf4j.Slf4j;
 import net.runelite.api.ChatMessageType;
 import net.runelite.api.Client;
+import net.runelite.api.GameState;
 import net.runelite.api.KeyCode;
 import net.runelite.api.MenuAction;
 import net.runelite.api.MenuEntry;
 import net.runelite.api.ScriptID;
+import net.runelite.api.events.GameStateChanged;
 import net.runelite.api.events.GameTick;
 import net.runelite.api.events.MenuOpened;
 import net.runelite.api.events.MenuOptionClicked;
@@ -87,6 +89,8 @@ public class AlchBlockerPlugin extends Plugin
 	private int allowanceTicksRemaining = 0;
 	/** True between opening our chatbox prompt and its onClose, so a spam-click can't reopen it. */
 	private boolean promptOpen = false;
+	/** Ticks left before the rate-limited fallback chat message may fire again. */
+	private int blockedMessageCooldownTicks = 0;
 
 	@Override
 	protected void startUp() throws Exception {
@@ -95,6 +99,13 @@ public class AlchBlockerPlugin extends Plugin
 
 	@Override
 	protected void shutDown() throws Exception {
+		// The plugin instance is reused across disable/re-enable (and profile switches), so a
+		// stale "prompt open" guard or an orphaned open panel must not survive a shutDown - or
+		// CONFIRM silently and permanently degrades to BLOCK on re-enable.
+		if (promptOpen) {
+			chatboxPanelManager.close();
+		}
+		promptOpen = false;
 		clearAllowance();
 		clientThread.invoke(this::showBlockedItems);
 	}
@@ -150,9 +161,25 @@ public class AlchBlockerPlugin extends Plugin
 
 	@Subscribe
 	public void onGameTick(GameTick event) {
+		if (blockedMessageCooldownTicks > 0) {
+			blockedMessageCooldownTicks--;
+		}
 		if (allowedItemId != -1 && --allowanceTicksRemaining <= 0) {
 			clearAllowance();
 			clientThread.invokeAtTickEnd(this::refreshItemVisibility);
+		}
+	}
+
+	/**
+	 * Recommended cleanup (card #4): {@code GameTick} does not fire on the login screen, so a live
+	 * allowance or an open-prompt guard would otherwise survive a logout/world hop until the next
+	 * login's ticks catch up.
+	 */
+	@Subscribe
+	public void onGameStateChanged(GameStateChanged event) {
+		if (event.getGameState() == GameState.LOGIN_SCREEN || event.getGameState() == GameState.HOPPING) {
+			clearAllowance();
+			promptOpen = false;
 		}
 	}
 
@@ -215,15 +242,21 @@ public class AlchBlockerPlugin extends Plugin
 
 	/** Edits the item list so this item is always alchable from now on. */
 	private void permanentlyAllow(String name) {
-		// WHITELIST: append the item so it now matches the allow-list. BLACKLIST: append a "!"
-		// exclusion (issue #36) so it works uniformly whether the item is exactly listed or only
-		// caught by a wildcard, without deleting or narrowing the pattern for every other item.
-		String line = config.listType() == ListType.WHITELIST ? name : "!" + name;
-		configManager.setConfiguration(AlchBlockerConfig.GROUP, "itemList", config.itemList().concat("\n" + line));
+		// A "!" line means "always allow this item" in BOTH list modes (card #4 decision), not
+		// "excluded from list matching" - it beats the list and any helper rule (e.g. notedItemsOnly)
+		// regardless of listType, so it is the only line that guarantees the item becomes alchable.
+		configManager.setConfiguration(AlchBlockerConfig.GROUP, "itemList", config.itemList().concat("\n!" + name));
 	}
 
 	private void sendBlockedChatMessage() {
+		// Rate-limited to once per allowance window (card #2 spec): alching is a spam-click
+		// activity, so without this every blocked click while the chatbox is unavailable spams
+		// the same message.
+		if (blockedMessageCooldownTicks > 0) {
+			return;
+		}
 		client.addChatMessage(ChatMessageType.GAMEMESSAGE, "", "Alch Blocker blocked that item.", null);
+		blockedMessageCooldownTicks = ALLOWANCE_TICKS;
 	}
 
 	private void updateItemVisibility() {
@@ -308,6 +341,14 @@ public class AlchBlockerPlugin extends Plugin
 	@Subscribe
 	public void onPostMenuSort(PostMenuSort event) {
 		if (!config.shiftClickAddsToList() || !client.isKeyPressed(KeyCode.KC_SHIFT)) {
+			return;
+		}
+
+		// The menu is not rebuilt while it is open, so PostMenuSort keeps firing on an already-open
+		// menu without a fresh entry array - swapping/appending here would duplicate the entry on
+		// every fire (both MenuEntrySwapperPlugin and OverlayRenderer guard on this for the same
+		// reason).
+		if (client.isMenuOpen()) {
 			return;
 		}
 
@@ -461,7 +502,10 @@ public class AlchBlockerPlugin extends Plugin
 		for (Widget inventoryItem : Objects.requireNonNull(inventory.getChildren())) {
 			int itemId = inventoryItem.getItemId();
 
-			if (itemId == allowedItemId) {
+			// allowedItemId is -1 when there is no live allowance, and an empty slot's item id is
+			// also -1 - guard the sentinel so an empty slot is never treated as "the confirmed item"
+			// (review finding #5).
+			if (allowedItemId != -1 && itemId == allowedItemId) {
 				// Confirmed via the CONFIRM prompt: must look and behave like a normal item so the
 				// user's next click actually reaches it.
 				inventoryItem.setOpacity(0);
@@ -477,13 +521,18 @@ public class AlchBlockerPlugin extends Plugin
 				shouldBlock = blockedItemCache.get(itemId);
 			} else {
 				String itemName = normalize(inventoryItem.getName());
-				// A "!" line always wins: it keeps the item out of the list match (same as before
-				// issue #44) AND stops the noted-items-only rule from applying to it.
-				boolean excluded = isExcluded(itemName);
-				boolean matchesPattern = !excluded && matchesListPatterns(itemName);
-				boolean blockedByList = (config.listType() == ListType.BLACKLIST) == matchesPattern;
-				boolean blockedByNotedRule = !excluded && config.notedItemsOnly() && !isNoted(itemId);
-				shouldBlock = blockedByList || blockedByNotedRule;
+				// A "!" line means "always allow" in BOTH list modes (card #4 decision) - it is not
+				// "excluded from list matching", so it must never be folded into the list-match
+				// polarity check below (that flips its meaning to "blocked" in WHITELIST mode). It
+				// always wins over the list and over any helper rule, e.g. notedItemsOnly.
+				if (isExcluded(itemName)) {
+					shouldBlock = false;
+				} else {
+					boolean matchesPattern = matchesListPatterns(itemName);
+					boolean blockedByList = (config.listType() == ListType.BLACKLIST) == matchesPattern;
+					boolean blockedByNotedRule = config.notedItemsOnly() && !isNoted(itemId);
+					shouldBlock = blockedByList || blockedByNotedRule;
+				}
 				blockedItemCache.put(itemId, shouldBlock);
 			}
 
@@ -531,9 +580,20 @@ public class AlchBlockerPlugin extends Plugin
 		return itemId > -1 && client.getItemDefinition(itemId).getNote() != -1;
 	}
 
-	/** Issue #44: true when an item is blocked solely by the noted-only rule (not excluded, not on the list). */
+	/**
+	 * Issue #44: true when an item is blocked solely by the noted-only rule - not excluded, and not
+	 * already blocked by the list itself. In WHITELIST mode every unlisted item is already
+	 * list-blocked, so without the "list would have allowed it" check this hijacks the normal
+	 * Whitelist/Blacklist Alchemy entry for every un-noted unlisted item (review finding #3).
+	 */
 	private boolean isBlockedOnlyByNotedRule(int itemId, String plainName) {
-		return config.notedItemsOnly() && !isNoted(itemId) && !isExcluded(plainName.toLowerCase());
+		String lower = plainName.toLowerCase();
+		if (!config.notedItemsOnly() || isNoted(itemId) || isExcluded(lower)) {
+			return false;
+		}
+		boolean matchesList = matchesListPatterns(lower);
+		boolean listWouldHaveBlocked = (config.listType() == ListType.BLACKLIST) == matchesList;
+		return !listWouldHaveBlocked;
 	}
 
 	private void showBlockedItems() {
