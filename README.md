@@ -13,6 +13,22 @@ Allows you to block items from being alched
 
 ![Demo](https://i.imgur.com/1kXUiCm.gif)
 
+## Helper rules
+
+Besides the blacklist/whitelist item list, an optional "Helper rules" section (collapsed and off
+by default) can block whole kinds of item without listing them by name, on top of your list, in
+both list modes:
+
+- **Only allow noted items**
+- **Block untradeable items**
+- **Minimum alch value**
+- **Block items worth more on the GE** (with a configurable required profit and whether to count
+  rune cost)
+
+A `!` prefix on an item list line always allows that item, overriding the list and every helper
+rule. Mage Training Arena reward items are always exempt from helper rules so the minigame keeps
+working.
+
 ## Issues/Suggestions
 
 Found a bug? Have a suggestion?

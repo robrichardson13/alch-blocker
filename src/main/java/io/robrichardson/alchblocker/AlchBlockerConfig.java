@@ -6,6 +6,8 @@ import io.robrichardson.alchblocker.config.ListType;
 import net.runelite.client.config.Config;
 import net.runelite.client.config.ConfigGroup;
 import net.runelite.client.config.ConfigItem;
+import net.runelite.client.config.ConfigSection;
+import net.runelite.client.config.Range;
 
 @ConfigGroup(AlchBlockerConfig.GROUP)
 public interface AlchBlockerConfig extends Config
@@ -68,17 +70,6 @@ public interface AlchBlockerConfig extends Config
 	}
 
 	@ConfigItem(
-		keyName = "notedItemsOnly",
-		name = "Only allow noted items",
-		description = "Blocks every un-noted item from being alched, on top of the list below. Prefix a line with ! to always allow one item.",
-		position = 5
-	)
-	default boolean notedItemsOnly()
-	{
-		return false;
-	}
-
-	@ConfigItem(
 		keyName = "itemList",
 		name = "Item list",
 		description = "Configures the list of items to block or unblock from being alched. Format: (item), (item). Example: fire rune, prayer potion*. Prefix a line with ! to always allow that item, overriding every other line in both Blacklist and Whitelist mode, e.g. *(4) then !prayer potion(4).",
@@ -87,5 +78,87 @@ public interface AlchBlockerConfig extends Config
 	default String itemList()
 	{
 		return "*Rune Pouch\n*(1)\n*(2)\n*(3)\n*(4)\n";
+	}
+
+	@ConfigSection(
+		name = "Helper rules",
+		description = "Block whole kinds of item without listing them by name. These apply on top of your list above, in both Blacklist and Whitelist mode - the only thing that overrides them is a ! line in the item list. Mage Training Arena items are always exempt. All off by default.",
+		position = 10,
+		closedByDefault = true
+	)
+	String helperRules = "helperRules";
+
+	@ConfigItem(
+		keyName = "notedItemsOnly",
+		name = "Only allow noted items",
+		description = "Blocks every un-noted item. Prefix a line with ! to always allow one item.",
+		section = "helperRules",
+		position = 11
+	)
+	default boolean notedItemsOnly()
+	{
+		return false;
+	}
+
+	@ConfigItem(
+		keyName = "blockUntradeable",
+		name = "Block untradeable items",
+		description = "Blocks items that cannot be traded or sold, since they usually cannot be replaced. Noted items are treated as tradeable if the unnoted item is.",
+		section = "helperRules",
+		position = 12
+	)
+	default boolean blockUntradeable()
+	{
+		return false;
+	}
+
+	@Range(min = 0, max = Integer.MAX_VALUE)
+	@ConfigItem(
+		keyName = "minAlchValue",
+		name = "Minimum alch value",
+		description = "Blocks items whose alch value is below this many coins. 0 turns the rule off.",
+		section = "helperRules",
+		position = 13
+	)
+	default int minAlchValue()
+	{
+		return 0;
+	}
+
+	@ConfigItem(
+		keyName = "blockAlchLoss",
+		name = "Block items worth more on the GE",
+		description = "Blocks items whose alch value is less than what they sell for on the Grand Exchange after tax. Uses the two settings below.",
+		section = "helperRules",
+		position = 14
+	)
+	default boolean blockAlchLoss()
+	{
+		return false;
+	}
+
+	@Range(min = Integer.MIN_VALUE, max = Integer.MAX_VALUE)
+	@ConfigItem(
+		keyName = "alchProfitMargin",
+		name = "Required profit",
+		description = "Only used when 'Block items worth more on the GE' is on. The alch must beat the GE price by at least this many coins. Negative values tolerate a loss of that size.",
+		section = "helperRules",
+		position = 15
+	)
+	default int alchProfitMargin()
+	{
+		return 0;
+	}
+
+	@ConfigItem(
+		keyName = "includeRuneCost",
+		name = "Count rune cost",
+		description = "Only used when 'Block items worth more on the GE' is on. Adds the price of 1 nature and 5 fire runes to the threshold. Turn this off if you alch with a fire staff. Explorer's ring casts never count rune cost.",
+		section = "helperRules",
+		position = 16
+	)
+	default boolean includeRuneCost()
+	{
+		return true;
 	}
 }

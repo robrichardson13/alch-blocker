@@ -36,10 +36,13 @@ import net.runelite.api.events.MenuOptionClicked;
 import net.runelite.api.events.PostMenuSort;
 import net.runelite.api.events.ScriptPostFired;
 import net.runelite.api.gameval.InterfaceID;
+import net.runelite.api.gameval.ItemID;
+import net.runelite.api.gameval.VarbitID;
 import net.runelite.api.widgets.Widget;
 import net.runelite.client.callback.ClientThread;
 import net.runelite.client.config.ConfigManager;
 import net.runelite.client.events.ConfigChanged;
+import net.runelite.client.game.ItemManager;
 import net.runelite.client.game.chatbox.ChatboxPanelManager;
 import net.runelite.client.game.chatbox.ChatboxTextMenuInput;
 import org.junit.Before;
@@ -67,6 +70,7 @@ public class AlchBlockerPluginBehaviourTest
 	@Mock private AlchBlockerConfig config;
 	@Mock private Menu menu;
 	@Mock private ChatboxPanelManager chatboxPanelManager;
+	@Mock private ItemManager itemManager;
 	@InjectMocks private AlchBlockerPlugin plugin;
 
 	private ChatboxTextMenuInput menuInput;
@@ -107,12 +111,18 @@ public class AlchBlockerPluginBehaviourTest
 		when(config.shiftClickAddsToList()).thenReturn(false);
 		lenient().when(client.isKeyPressed(KeyCode.KC_SHIFT)).thenReturn(false);
 		when(config.notedItemsOnly()).thenReturn(false);
-		// Default every item id to "un-noted" unless a test says otherwise.
-		lenient().when(client.getItemDefinition(anyInt())).thenAnswer(inv -> {
+		// Default every item id to "un-noted, tradeable, cheap" unless a test says otherwise. Helper
+		// rules only ever consult ItemManager, never client.getItemDefinition directly.
+		lenient().when(itemManager.getItemComposition(anyInt())).thenAnswer(inv -> {
 			ItemComposition comp = mock(ItemComposition.class);
-			when(comp.getNote()).thenReturn(-1);
+			lenient().when(comp.getNote()).thenReturn(-1);
+			lenient().when(comp.isTradeable()).thenReturn(true);
+			lenient().when(comp.getLinkedNoteId()).thenReturn(-1);
+			lenient().when(comp.getPrice()).thenReturn(1000);
+			lenient().when(comp.getHaPrice()).thenReturn(600);
 			return comp;
 		});
+		lenient().when(itemManager.getItemPrice(anyInt())).thenReturn(0);
 
 		menuInput = mock(ChatboxTextMenuInput.class, withSettings().defaultAnswer(Mockito.RETURNS_SELF));
 		lenient().when(chatboxPanelManager.openTextMenuInput(anyString())).thenReturn(menuInput);
@@ -201,8 +211,23 @@ public class AlchBlockerPluginBehaviourTest
 	private void stubNoted(int itemId, boolean noted)
 	{
 		ItemComposition comp = mock(ItemComposition.class);
-		when(comp.getNote()).thenReturn(noted ? 799 : -1);
-		when(client.getItemDefinition(itemId)).thenReturn(comp);
+		lenient().when(comp.getNote()).thenReturn(noted ? 799 : -1);
+		lenient().when(comp.isTradeable()).thenReturn(true);
+		lenient().when(comp.getLinkedNoteId()).thenReturn(-1);
+		when(itemManager.getItemComposition(itemId)).thenReturn(comp);
+	}
+
+	/** Stubs an item's composition and live GE price for the helper-rule tests. */
+	private void stubItem(int itemId, int storePrice, int haPrice, int gePrice, boolean noted, boolean tradeable)
+	{
+		ItemComposition comp = mock(ItemComposition.class);
+		lenient().when(comp.getNote()).thenReturn(noted ? 799 : -1);
+		lenient().when(comp.getPrice()).thenReturn(storePrice);
+		lenient().when(comp.getHaPrice()).thenReturn(haPrice);
+		lenient().when(comp.isTradeable()).thenReturn(tradeable);
+		lenient().when(comp.getLinkedNoteId()).thenReturn(-1);
+		when(itemManager.getItemComposition(itemId)).thenReturn(comp);
+		lenient().when(itemManager.getItemPrice(itemId)).thenReturn(gePrice);
 	}
 
 	@Test
@@ -1059,5 +1084,200 @@ public class AlchBlockerPluginBehaviourTest
 		// The prompt guard must also be clear, so CONFIRM works again after logging back in.
 		plugin.onMenuOptionClicked(alchClick(coins));
 		verify(chatboxPanelManager, Mockito.times(2)).openTextMenuInput(anyString());
+	}
+
+	// --- Card #8: helper rules (untradeables, value thresholds, rune cost, MTA exemption) ---
+
+	/**
+	 * With every helper rule off (the shipped default), the plugin must behave exactly like
+	 * pre-helper-rules Alch Blocker: zero ItemManager lookups, only the list verdict (card #8 spec's
+	 * fast path).
+	 */
+	@Test
+	public void noHelperRulesEnabledPerformsNoItemLookups()
+	{
+		selectSpell(highAlchSpell);
+		redrawInventory();
+
+		Mockito.verifyNoInteractions(itemManager);
+	}
+
+	/** Minimum alch value blocks an item the list itself would allow. */
+	@Test
+	public void minAlchValueBlocksItemTheListWouldAllow()
+	{
+		when(config.minAlchValue()).thenReturn(1000);
+		stubItem(BONES, 1000, 400, 400, false, true);
+		plugin.onConfigChanged(configChanged("minAlchValue"));
+		selectSpell(highAlchSpell);
+		redrawInventory();
+
+		assertEquals("alch value 400 is below the 1000 minimum", 200, bones.opacity);
+		MenuOptionClicked click = alchClick(bones);
+		plugin.onMenuOptionClicked(click);
+		assertTrue(click.isConsumed());
+	}
+
+	/** A helper rule beats even an exact whitelist match - it is a block on top of the list, not under it. */
+	@Test
+	public void helperRuleBlocksEvenAWhitelistedName()
+	{
+		when(config.listType()).thenReturn(ListType.WHITELIST);
+		when(config.itemList()).thenReturn("bones");
+		when(config.blockUntradeable()).thenReturn(true);
+		stubItem(BONES, 1000, 600, 1000, false, false);
+		plugin.onConfigChanged(configChanged("itemList"));
+		selectSpell(highAlchSpell);
+		redrawInventory();
+
+		assertEquals("blockUntradeable must beat an exact whitelist match", 200, bones.opacity);
+	}
+
+	/** Card #8 decision: a "!" exclusion line overrides a helper rule too, not just the list. */
+	@Test
+	public void bangExceptionOverridesHelperRule()
+	{
+		when(config.blockUntradeable()).thenReturn(true);
+		when(config.itemList()).thenReturn("coins\n!bones");
+		stubItem(BONES, 1000, 600, 1000, false, false);
+		plugin.onConfigChanged(configChanged("itemList"));
+		selectSpell(highAlchSpell);
+		redrawInventory();
+
+		assertEquals("a ! exclusion overrides a helper rule too", 0, bones.opacity);
+		assertFalse(bones.hidden);
+		MenuOptionClicked click = alchClick(bones);
+		plugin.onMenuOptionClicked(click);
+		assertFalse(click.isConsumed());
+	}
+
+	/**
+	 * Noted items report {@code isTradeable() == false} even when the unnoted item is tradeable
+	 * (no-bad-alchs' 1.2.1 fix). Without checking the linked unnoted variant, blockUntradeable would
+	 * hide every noted item.
+	 */
+	@Test
+	public void untradeableRuleAllowsNotedFormOfATradeableItem()
+	{
+		when(config.blockUntradeable()).thenReturn(true);
+
+		int unnotedId = 9001;
+		int notedId = 9002;
+
+		ItemComposition unnotedComp = mock(ItemComposition.class);
+		lenient().when(unnotedComp.isTradeable()).thenReturn(true);
+		lenient().when(itemManager.getItemComposition(unnotedId)).thenReturn(unnotedComp);
+
+		ItemComposition notedComp = mock(ItemComposition.class);
+		lenient().when(notedComp.getNote()).thenReturn(799);
+		lenient().when(notedComp.isTradeable()).thenReturn(false);
+		lenient().when(notedComp.getLinkedNoteId()).thenReturn(unnotedId);
+		lenient().when(notedComp.getHaPrice()).thenReturn(600);
+		lenient().when(itemManager.getItemComposition(notedId)).thenReturn(notedComp);
+
+		Slot notedPotion = new Slot(InterfaceID.Inventory.ITEMS, notedId, "Prayer potion(4)");
+		inventoryOf(notedPotion, bones);
+		selectSpell(highAlchSpell);
+		redrawInventory();
+
+		assertEquals("the noted item's unnoted variant is tradeable, so it must stay alchable", 0, notedPotion.opacity);
+		assertFalse(notedPotion.hidden);
+	}
+
+	/**
+	 * The alch-loss rule's threshold is the GE price after tax, plus the required profit margin, plus
+	 * rune cost when enabled. High alch value 1000, GE price 900 (882 after the 2% tax), margin 50,
+	 * runes 150 (1 nature @ 100 + 5 fire @ 10) -> threshold 1082, so 1000 must be blocked. Turning rune
+	 * cost off drops the threshold to 932, so the same item must then be allowed.
+	 */
+	@Test
+	public void alchLossRuleAddsRuneCostAndMargin()
+	{
+		when(config.blockAlchLoss()).thenReturn(true);
+		when(config.includeRuneCost()).thenReturn(true);
+		when(config.alchProfitMargin()).thenReturn(50);
+		lenient().when(itemManager.getItemPrice(ItemID.NATURERUNE)).thenReturn(100);
+		lenient().when(itemManager.getItemPrice(ItemID.FIRERUNE)).thenReturn(10);
+		stubItem(BONES, 1000, 1000, 900, false, true);
+		selectSpell(highAlchSpell);
+		redrawInventory();
+
+		assertEquals("1000 < 882 + 50 + 150 = 1082", 200, bones.opacity);
+
+		when(config.includeRuneCost()).thenReturn(false);
+		plugin.onConfigChanged(configChanged("includeRuneCost"));
+
+		assertEquals("without rune cost, 1000 >= 882 + 50 = 932", 0, bones.opacity);
+	}
+
+	/** Explorer's Ring casts are free, so rune cost must never be counted even when the setting is on. */
+	@Test
+	public void explorerRingCastDoesNotCountRuneCost()
+	{
+		when(config.blockAlchLoss()).thenReturn(true);
+		when(config.includeRuneCost()).thenReturn(true);
+		when(config.alchProfitMargin()).thenReturn(50);
+		lenient().when(itemManager.getItemPrice(ItemID.NATURERUNE)).thenReturn(100);
+		lenient().when(itemManager.getItemPrice(ItemID.FIRERUNE)).thenReturn(10);
+		stubItem(BONES, 1000, 1000, 900, false, true);
+		lenient().when(client.getVarbitValue(VarbitID.LUMBRIDGE_ALCHEMY_HIGH)).thenReturn(1);
+
+		Widget ringInventory = mock(Widget.class);
+		when(ringInventory.getId()).thenReturn(InterfaceID.LumbridgeAlchemy.ITEMS);
+		when(ringInventory.getChildren()).thenReturn(new Widget[]{bones.widget});
+		when(client.getWidget(InterfaceID.LumbridgeAlchemy.ITEMS)).thenReturn(ringInventory);
+
+		redrawInventory();
+
+		assertEquals("ring casts are free: 1000 >= 882 + 50 = 932 with no rune cost", 0, bones.opacity);
+	}
+
+	/** Low alch uses 40% of store price; high alch uses the client's authoritative high alch price. */
+	@Test
+	public void lowAlchUsesFortyPercentAndHighUsesHaPrice()
+	{
+		when(config.minAlchValue()).thenReturn(500);
+		stubItem(BONES, 1000, 700, 0, false, true);
+		plugin.onConfigChanged(configChanged("minAlchValue"));
+
+		Widget lowAlchSpell = mock(Widget.class);
+		when(lowAlchSpell.getId()).thenReturn(InterfaceID.MagicSpellbook.LOW_ALCHEMY);
+
+		selectSpell(lowAlchSpell);
+		redrawInventory();
+		assertEquals("low alch value 400 (40% of 1000) is below the 500 minimum", 200, bones.opacity);
+
+		// Deselect first (as a real cancel would) so the previous block doesn't linger: hideBlockedItems
+		// only ever adds new blocks, it doesn't itself lift one from a prior pass.
+		selectSpell(null);
+		redrawInventory();
+		selectSpell(highAlchSpell);
+		redrawInventory();
+		assertEquals("high alch value 700 meets the 500 minimum", 0, bones.opacity);
+	}
+
+	/**
+	 * Mage Training Arena reward items have a store price of 1, so any value-based helper rule would
+	 * hide them and break the minigame. They are exempt from helper rules only - the item list can
+	 * still block one by name.
+	 */
+	@Test
+	public void mageTrainingArenaItemsAreExemptFromHelperRules()
+	{
+		when(config.minAlchValue()).thenReturn(1000);
+		int mtaItemId = ItemID.MAGICTRAINING_EMERALD;
+		stubItem(mtaItemId, 1, 1, 1, false, true);
+		Slot mtaItem = new Slot(InterfaceID.Inventory.ITEMS, mtaItemId, "Charged emerald");
+		inventoryOf(mtaItem, bones);
+		plugin.onConfigChanged(configChanged("minAlchValue"));
+		selectSpell(highAlchSpell);
+		redrawInventory();
+
+		assertEquals("MTA items are exempt from helper rules", 0, mtaItem.opacity);
+
+		when(config.itemList()).thenReturn("charged emerald");
+		plugin.onConfigChanged(configChanged("itemList"));
+
+		assertEquals("the exemption covers helper rules only - the list can still block it by name", 200, mtaItem.opacity);
 	}
 }

@@ -1,6 +1,7 @@
 package io.robrichardson.alchblocker;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -20,6 +21,7 @@ import lombok.extern.slf4j.Slf4j;
 import net.runelite.api.ChatMessageType;
 import net.runelite.api.Client;
 import net.runelite.api.GameState;
+import net.runelite.api.ItemComposition;
 import net.runelite.api.KeyCode;
 import net.runelite.api.MenuAction;
 import net.runelite.api.MenuEntry;
@@ -33,11 +35,14 @@ import net.runelite.api.events.ScriptPostFired;
 import net.runelite.api.events.WidgetClosed;
 import net.runelite.api.events.WidgetLoaded;
 import net.runelite.api.gameval.InterfaceID;
+import net.runelite.api.gameval.ItemID;
+import net.runelite.api.gameval.VarbitID;
 import net.runelite.api.widgets.Widget;
 import net.runelite.client.callback.ClientThread;
 import net.runelite.client.config.ConfigManager;
 import net.runelite.client.eventbus.Subscribe;
 import net.runelite.client.events.ConfigChanged;
+import net.runelite.client.game.ItemManager;
 import net.runelite.client.game.chatbox.ChatboxPanelManager;
 import net.runelite.client.game.chatbox.ChatboxTextMenuInput;
 import net.runelite.client.plugins.Plugin;
@@ -66,11 +71,21 @@ public class AlchBlockerPlugin extends Plugin
 	@Inject
 	private ChatboxPanelManager chatboxPanelManager;
 
+	@Inject
+	private ItemManager itemManager;
+
 	Set<String> exactMatches = new HashSet<>();
 	List<String> wildcardPatterns = new ArrayList<>();
 	Set<String> exactExclusions = new HashSet<>();
 	List<String> wildcardExclusions = new ArrayList<>();
-	Map<Integer, Boolean> blockedItemCache = new HashMap<>();
+	/**
+	 * Only the list-match verdict for an item id, NOT the final block/allow decision - helper rules
+	 * depend on alch type, whether the cast is ring-powered, and live GE prices, none of which are
+	 * constant per item id, so caching the final verdict would serve stale answers with no event to
+	 * invalidate on (card #8 spec). The list match itself is genuinely constant per item id, since
+	 * names are, so this is still worth caching.
+	 */
+	Map<Integer, Boolean> listVerdictCache = new HashMap<>();
 	Set<Integer> hiddenItems = new HashSet<>();
 
 	private static final int HIGH_ALCHEMY_WIDGET_ID = InterfaceID.MagicSpellbook.HIGH_ALCHEMY;
@@ -80,6 +95,21 @@ public class AlchBlockerPlugin extends Plugin
 	private static final int EXPLORERS_RING_GROUP_ID = InterfaceID.LUMBRIDGE_ALCHEMY;
 
 	private static final int BLOCKED_OPACITY = 200;
+
+	/**
+	 * Mage Training Arena reward items (plus the tutorial's blank object) always have a store price
+	 * of 1, so any value-based helper rule would hide them and silently break the minigame whose
+	 * entire mechanic is alching them. Exempt from helper rules only - the item list can still block
+	 * them by name (card #8 spec, matching no-bad-alchs' hardcoded exclusion list).
+	 */
+	private static final Set<Integer> HELPER_RULE_EXEMPT_ITEMS = new HashSet<>(Arrays.asList(
+		ItemID.BLANKOBJECT,
+		ItemID.MAGICTRAINING_LEATHER_BOOTS,
+		ItemID.MAGICTRAINING_ADAMANT_KITESHIELD,
+		ItemID.MAGICTRAINING_ADAMANT_MED_HELM,
+		ItemID.MAGICTRAINING_EMERALD,
+		ItemID.MAGICTRAINING_RUNE_LONGSWORD
+	));
 
 	/** How long a "cast this once" confirmation stays usable before it expires unused (issue #18). */
 	private static final int ALLOWANCE_TICKS = 30;
@@ -119,7 +149,7 @@ public class AlchBlockerPlugin extends Plugin
 	public void onConfigChanged(ConfigChanged event) {
 		if (!AlchBlockerConfig.GROUP.equals(event.getGroup())) return;
 		parseItemList();
-		blockedItemCache.clear();
+		listVerdictCache.clear();
 		clearAllowance();
 		// Restore everything first so a display type change mid-alch doesn't leave items
 		// stuck with the old display type's opacity/hidden state (issue #17), then re-apply.
@@ -369,9 +399,9 @@ public class AlchBlockerPlugin extends Plugin
 
 		final String itemName = w.getName();
 		final String plainName = Text.removeTags(itemName).replace(' ', ' ').trim();
-		// Issue #44: same reasoning as onMenuOpened - a noted-only block needs a "!" exception, not
-		// a normal list edit that would silently do nothing.
-		if (isBlockedOnlyByNotedRule(w.getItemId(), plainName)) {
+		// Issue #44 / card #8: same reasoning as onMenuOpened - a helper-rule-only block needs a "!"
+		// exception, not a normal list edit that would silently do nothing.
+		if (isBlockedOnlyByHelperRules(w.getItemId(), plainName, container == EXPLORERS_RING_INVENTORY_WIDGET_ID)) {
 			client.getMenu().createMenuEntry(-1)
 				.setOption("Always allow Alchemy")
 				.setTarget(itemName)
@@ -456,10 +486,10 @@ public class AlchBlockerPlugin extends Plugin
 			final String itemName = w.getName();
 			final String plainItemName = Text.removeTags(itemName).replace('\u00A0', ' ').trim();
 
-			// Issue #44: a noted-only block can't be lifted by a normal list edit, so offer the one
-			// thing that actually works instead - a "!" exception (issue #36) - rather than a
-			// Blacklist/Whitelist entry that would silently do nothing.
-			if (isBlockedOnlyByNotedRule(itemId, plainItemName)) {
+			// Issue #44 / card #8: a helper-rule-only block can't be lifted by a normal list edit, so
+			// offer the one thing that actually works instead - a "!" exception (issue #36) - rather
+			// than a Blacklist/Whitelist entry that would silently do nothing.
+			if (isBlockedOnlyByHelperRules(itemId, plainItemName, w.getId() == EXPLORERS_RING_INVENTORY_WIDGET_ID)) {
 				client.getMenu().createMenuEntry(idx)
 					.setOption("Always allow Alchemy")
 					.setTarget(itemName)
@@ -499,6 +529,12 @@ public class AlchBlockerPlugin extends Plugin
 			return;
 		}
 
+		// Fast path: with no helper rule enabled, behave exactly like pre-helper-rules Alch Blocker -
+		// zero ItemManager lookups, only the list verdict (card #8 spec).
+		boolean helperRulesActive = anyHelperRuleEnabled();
+		boolean ringPowered = inventory.getId() == EXPLORERS_RING_INVENTORY_WIDGET_ID;
+		AlchContext ctx = helperRulesActive ? currentAlchContext(ringPowered) : null;
+
 		for (Widget inventoryItem : Objects.requireNonNull(inventory.getChildren())) {
 			int itemId = inventoryItem.getItemId();
 
@@ -514,26 +550,22 @@ public class AlchBlockerPlugin extends Plugin
 				continue;
 			}
 
+			String itemName = normalize(inventoryItem.getName());
 			boolean shouldBlock;
 
-			// Check cache first for O(1) lookup
-			if (blockedItemCache.containsKey(itemId)) {
-				shouldBlock = blockedItemCache.get(itemId);
+			// A "!" line means "always allow" in BOTH list modes (card #4 decision) - it is not
+			// "excluded from list matching", so it must never be folded into the list-match polarity
+			// check below (that flips its meaning to "blocked" in WHITELIST mode). It always wins
+			// over the list and over any helper rule (card #8 decision: precedence is confirm
+			// allowance -> ! line -> helper rules -> list).
+			if (isExcluded(itemName)) {
+				shouldBlock = false;
+			} else if (helperRulesActive && !HELPER_RULE_EXEMPT_ITEMS.contains(itemId) && isBlockedByHelperRules(itemId, ctx)) {
+				shouldBlock = true;
 			} else {
-				String itemName = normalize(inventoryItem.getName());
-				// A "!" line means "always allow" in BOTH list modes (card #4 decision) - it is not
-				// "excluded from list matching", so it must never be folded into the list-match
-				// polarity check below (that flips its meaning to "blocked" in WHITELIST mode). It
-				// always wins over the list and over any helper rule, e.g. notedItemsOnly.
-				if (isExcluded(itemName)) {
-					shouldBlock = false;
-				} else {
-					boolean matchesPattern = matchesListPatterns(itemName);
-					boolean blockedByList = (config.listType() == ListType.BLACKLIST) == matchesPattern;
-					boolean blockedByNotedRule = config.notedItemsOnly() && !isNoted(itemId);
-					shouldBlock = blockedByList || blockedByNotedRule;
-				}
-				blockedItemCache.put(itemId, shouldBlock);
+				Boolean cached = listVerdictCache.get(itemId);
+				boolean matchesPattern = cached != null ? cached : cacheListVerdict(itemId, itemName);
+				shouldBlock = (config.listType() == ListType.BLACKLIST) == matchesPattern;
 			}
 
 			if (shouldBlock) {
@@ -545,6 +577,12 @@ public class AlchBlockerPlugin extends Plugin
 				hiddenItems.add(itemId);
 			}
 		}
+	}
+
+	private boolean cacheListVerdict(int itemId, String itemName) {
+		boolean matches = matchesListPatterns(itemName);
+		listVerdictCache.put(itemId, matches);
+		return matches;
 	}
 
 	/** Whether a "!" exclusion line matches this item name. Always wins, over the list and over any helper rule. */
@@ -575,20 +613,116 @@ public class AlchBlockerPlugin extends Plugin
 		return false;
 	}
 
-	/** Issue #44: whether this item is noted. Un-noted items are blocked when notedItemsOnly is on. */
-	private boolean isNoted(int itemId) {
-		return itemId > -1 && client.getItemDefinition(itemId).getNote() != -1;
+	/** True when any enabled helper rule config is on; gates the fast path in {@link #hideBlockedItems}. */
+	private boolean anyHelperRuleEnabled() {
+		return config.notedItemsOnly() || config.blockUntradeable() || config.minAlchValue() > 0 || config.blockAlchLoss();
 	}
 
 	/**
-	 * Issue #44: true when an item is blocked solely by the noted-only rule - not excluded, and not
+	 * Per-pass constants for the value-based helper rules: whether the currently selected cast is
+	 * high alch (else low), and the rune cost to add to the GE threshold (0 when the cast is
+	 * ring-powered - Explorer's Ring casts are free - or when "Count rune cost" is off).
+	 */
+	private static final class AlchContext
+	{
+		final boolean high;
+		final int runeCost;
+
+		AlchContext(boolean high, int runeCost) {
+			this.high = high;
+			this.runeCost = runeCost;
+		}
+	}
+
+	private AlchContext currentAlchContext(boolean ringPowered) {
+		boolean high;
+		if (ringPowered) {
+			// Ring 4 offers a daily choice of free high OR low alchemy casts.
+			high = client.getVarbitValue(VarbitID.LUMBRIDGE_ALCHEMY_HIGH) != 0;
+		} else {
+			Widget selectedWidget = client.getSelectedWidget();
+			high = selectedWidget != null && selectedWidget.getId() == HIGH_ALCHEMY_WIDGET_ID;
+		}
+
+		int runeCost = 0;
+		if (!ringPowered && config.includeRuneCost()) {
+			runeCost = itemManager.getItemPrice(ItemID.NATURERUNE) + 5 * itemManager.getItemPrice(ItemID.FIRERUNE);
+		}
+		return new AlchContext(high, runeCost);
+	}
+
+	/**
+	 * True when any enabled helper rule blocks this item. Never unblocks anything - helper rules are
+	 * additive blocks on top of the list, in both list modes (card #8 spec). Callers must skip this
+	 * for items in {@link #HELPER_RULE_EXEMPT_ITEMS} (Mage Training Arena).
+	 */
+	private boolean isBlockedByHelperRules(int itemId, AlchContext ctx) {
+		ItemComposition c = itemManager.getItemComposition(itemId);
+
+		if (config.notedItemsOnly() && !isNoted(c)) {
+			return true;
+		}
+		if (config.blockUntradeable() && !isTradeableIncludingNoted(c)) {
+			return true;
+		}
+
+		int alchValue = alchValue(c, ctx.high);
+		if (config.minAlchValue() > 0 && alchValue < config.minAlchValue()) {
+			return true;
+		}
+		if (config.blockAlchLoss()) {
+			int threshold = afterGeTax(itemManager.getItemPrice(itemId)) + config.alchProfitMargin() + ctx.runeCost;
+			if (alchValue < threshold) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/** Issue #44: whether this item is noted. Un-noted items are blocked when notedItemsOnly is on. */
+	private boolean isNoted(ItemComposition c) {
+		return c.getNote() != -1;
+	}
+
+	/**
+	 * Noted items report {@code isTradeable() == false} even when the unnoted item is tradeable, so
+	 * check the linked (unnoted) variant too - otherwise blockUntradeable would hide every noted item,
+	 * directly contradicting the noted-only rule (card #8 spec, matching no-bad-alchs' 1.2.1 fix).
+	 */
+	private boolean isTradeableIncludingNoted(ItemComposition c) {
+		if (c.isTradeable()) {
+			return true;
+		}
+		int linkedNoteId = c.getLinkedNoteId();
+		return linkedNoteId != -1 && itemManager.getItemComposition(linkedNoteId).isTradeable();
+	}
+
+	/** High alch uses the client's authoritative value; there's no low alch accessor, so 40% of store price. */
+	private static int alchValue(ItemComposition c, boolean high) {
+		return high ? c.getHaPrice() : (int) (c.getPrice() * 0.4);
+	}
+
+	/** Sub-50gp items are GE tax exempt; otherwise 2%, capped at 5,000,000 gp (Jagex-tunable numbers). */
+	private static int afterGeTax(int price) {
+		if (price < 50) {
+			return price;
+		}
+		return price - Math.min(5_000_000, (int) (price * 0.02));
+	}
+
+	/**
+	 * True when an item is blocked solely by a helper rule - not excluded, not exempt, and not
 	 * already blocked by the list itself. In WHITELIST mode every unlisted item is already
 	 * list-blocked, so without the "list would have allowed it" check this hijacks the normal
-	 * Whitelist/Blacklist Alchemy entry for every un-noted unlisted item (review finding #3).
+	 * Whitelist/Blacklist Alchemy entry for every helper-rule-blocked unlisted item (review finding #3,
+	 * generalised from the noted-only rule to every helper rule per card #8).
 	 */
-	private boolean isBlockedOnlyByNotedRule(int itemId, String plainName) {
+	private boolean isBlockedOnlyByHelperRules(int itemId, String plainName, boolean ringPowered) {
 		String lower = plainName.toLowerCase();
-		if (!config.notedItemsOnly() || isNoted(itemId) || isExcluded(lower)) {
+		if (!anyHelperRuleEnabled() || isExcluded(lower) || HELPER_RULE_EXEMPT_ITEMS.contains(itemId)) {
+			return false;
+		}
+		if (!isBlockedByHelperRules(itemId, currentAlchContext(ringPowered))) {
 			return false;
 		}
 		boolean matchesList = matchesListPatterns(lower);
