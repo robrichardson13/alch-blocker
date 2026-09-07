@@ -57,10 +57,21 @@ public interface AlchBlockerConfig extends Config
 	}
 
 	@ConfigItem(
+		keyName = "shiftClickAddsToList",
+		name = "Shift-click adds to item list",
+		description = "Hold shift and left-click an inventory item to add its exact name to the item list (shift-click again to remove it). Off by default: conflicts with Menu Entry Swapper's shift-click drop.",
+		position = 4
+	)
+	default boolean shiftClickAddsToList()
+	{
+		return false;
+	}
+
+	@ConfigItem(
 		keyName = "itemList",
 		name = "Item list",
 		description = "Configures the list of items to block or unblock from being alched. Format: (item), (item). Example: fire rune, prayer potion*. Prefix a line with ! to make an exception that overrides the other lines, e.g. *(4) then !prayer potion(4).",
-		position = 4
+		position = 5
 	)
 	default String itemList()
 	{

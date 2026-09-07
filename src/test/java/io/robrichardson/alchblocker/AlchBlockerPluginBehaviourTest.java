@@ -21,6 +21,7 @@ import io.robrichardson.alchblocker.config.DisplayType;
 import io.robrichardson.alchblocker.config.ListType;
 import java.util.List;
 import net.runelite.api.Client;
+import net.runelite.api.KeyCode;
 import net.runelite.api.Menu;
 import net.runelite.api.MenuAction;
 import net.runelite.api.MenuEntry;
@@ -28,6 +29,7 @@ import net.runelite.api.ScriptID;
 import net.runelite.api.events.GameTick;
 import net.runelite.api.events.MenuOpened;
 import net.runelite.api.events.MenuOptionClicked;
+import net.runelite.api.events.PostMenuSort;
 import net.runelite.api.events.ScriptPostFired;
 import net.runelite.api.gameval.InterfaceID;
 import net.runelite.api.widgets.Widget;
@@ -98,6 +100,8 @@ public class AlchBlockerPluginBehaviourTest
 		when(config.displayType()).thenReturn(DisplayType.TRANSPARENT);
 		when(config.contextMenuEnabled()).thenReturn(true);
 		when(config.blockedItemAction()).thenReturn(BlockedItemAction.BLOCK);
+		when(config.shiftClickAddsToList()).thenReturn(false);
+		lenient().when(client.isKeyPressed(KeyCode.KC_SHIFT)).thenReturn(false);
 
 		menuInput = mock(ChatboxTextMenuInput.class, withSettings().defaultAnswer(Mockito.RETURNS_SELF));
 		lenient().when(chatboxPanelManager.openTextMenuInput(anyString())).thenReturn(menuInput);
@@ -167,6 +171,20 @@ public class AlchBlockerPluginBehaviourTest
 			}
 		}
 		throw new AssertionError("No option registered containing: " + textContains + ", options were: " + texts);
+	}
+
+	private void postMenuSort(MenuEntry lastEntry)
+	{
+		when(menu.getMenuEntries()).thenReturn(new MenuEntry[]{lastEntry});
+		plugin.onPostMenuSort(new PostMenuSort());
+	}
+
+	/** A menu entry whose widget is the given slot (or itemId -1 / a non-inventory widget if slot is null). */
+	private MenuEntry itemMenuEntry(Widget widget)
+	{
+		MenuEntry entry = mock(MenuEntry.class);
+		when(entry.getWidget()).thenReturn(widget);
+		return entry;
 	}
 
 	@Test
@@ -551,6 +569,132 @@ public class AlchBlockerPluginBehaviourTest
 		optionCallback("always allow").run();
 
 		verify(configManager).setConfiguration(eq(AlchBlockerConfig.GROUP), eq("itemList"), contains("Coins"));
+	}
+
+	/** Rob's ask: shift-click an inventory item to add its raw name to the item list. */
+	@Test
+	public void shiftClickEntryOnlyAppearsWhenShiftHeldAndToggleEnabled()
+	{
+		when(config.shiftClickAddsToList()).thenReturn(false);
+		when(client.isKeyPressed(KeyCode.KC_SHIFT)).thenReturn(true);
+		postMenuSort(itemMenuEntry(bones.widget));
+		verify(menu, never()).createMenuEntry(anyInt());
+
+		when(config.shiftClickAddsToList()).thenReturn(true);
+		when(client.isKeyPressed(KeyCode.KC_SHIFT)).thenReturn(false);
+		postMenuSort(itemMenuEntry(bones.widget));
+		verify(menu, never()).createMenuEntry(anyInt());
+
+		MenuEntry created = mock(MenuEntry.class, withSettings().defaultAnswer(Mockito.RETURNS_SELF));
+		when(menu.createMenuEntry(-1)).thenReturn(created);
+		when(client.isKeyPressed(KeyCode.KC_SHIFT)).thenReturn(true);
+		postMenuSort(itemMenuEntry(bones.widget));
+		verify(menu).createMenuEntry(-1);
+		verify(created).setOption("Blacklist Alchemy");
+	}
+
+	@Test
+	public void shiftClickAddsTheRawItemNameToTheItemList()
+	{
+		when(config.shiftClickAddsToList()).thenReturn(true);
+		when(client.isKeyPressed(KeyCode.KC_SHIFT)).thenReturn(true);
+		MenuEntry created = mock(MenuEntry.class, withSettings().defaultAnswer(Mockito.RETURNS_SELF));
+		when(menu.createMenuEntry(-1)).thenReturn(created);
+
+		postMenuSort(itemMenuEntry(bones.widget));
+
+		ArgumentCaptor<java.util.function.Consumer<MenuEntry>> onClick = ArgumentCaptor.forClass(java.util.function.Consumer.class);
+		verify(created).onClick(onClick.capture());
+		onClick.getValue().accept(created);
+
+		verify(configManager).setConfiguration(eq(AlchBlockerConfig.GROUP), eq("itemList"), contains("\nBones"));
+		verify(configManager, never()).setConfiguration(any(), any(), contains("*"));
+	}
+
+	@Test
+	public void shiftClickOnAnAlreadyListedItemRemovesTheLine()
+	{
+		when(config.shiftClickAddsToList()).thenReturn(true);
+		when(client.isKeyPressed(KeyCode.KC_SHIFT)).thenReturn(true);
+		when(config.itemList()).thenReturn("coins");
+		plugin.onConfigChanged(configChanged("itemList"));
+
+		MenuEntry created = mock(MenuEntry.class, withSettings().defaultAnswer(Mockito.RETURNS_SELF));
+		when(menu.createMenuEntry(-1)).thenReturn(created);
+		postMenuSort(itemMenuEntry(coins.widget));
+		verify(created).setOption("Remove from Alch list");
+
+		ArgumentCaptor<java.util.function.Consumer<MenuEntry>> onClick = ArgumentCaptor.forClass(java.util.function.Consumer.class);
+		verify(created).onClick(onClick.capture());
+		onClick.getValue().accept(created);
+
+		ArgumentCaptor<String> written = ArgumentCaptor.forClass(String.class);
+		verify(configManager).setConfiguration(eq(AlchBlockerConfig.GROUP), eq("itemList"), written.capture());
+		assertFalse("the coins line must be gone", written.getValue().toLowerCase().contains("coins"));
+
+		// Round trip: with the line gone, a second shift-click adds it back.
+		when(config.itemList()).thenReturn(written.getValue());
+		plugin.onConfigChanged(configChanged("itemList"));
+		MenuEntry created2 = mock(MenuEntry.class, withSettings().defaultAnswer(Mockito.RETURNS_SELF));
+		when(menu.createMenuEntry(-1)).thenReturn(created2);
+		postMenuSort(itemMenuEntry(coins.widget));
+		verify(created2).setOption("Blacklist Alchemy");
+	}
+
+	@Test
+	public void shiftClickNeverDeletesAWildcardPattern()
+	{
+		when(config.shiftClickAddsToList()).thenReturn(true);
+		when(client.isKeyPressed(KeyCode.KC_SHIFT)).thenReturn(true);
+		when(config.itemList()).thenReturn("*(4)");
+		plugin.onConfigChanged(configChanged("itemList"));
+
+		Slot prayerPotion = new Slot(InterfaceID.Inventory.ITEMS, 2434, "Prayer potion(4)");
+
+		MenuEntry created = mock(MenuEntry.class, withSettings().defaultAnswer(Mockito.RETURNS_SELF));
+		when(menu.createMenuEntry(-1)).thenReturn(created);
+		postMenuSort(itemMenuEntry(prayerPotion.widget));
+		verify(created).setOption("Blacklist Alchemy");   // add variant, not remove
+
+		ArgumentCaptor<java.util.function.Consumer<MenuEntry>> onClick = ArgumentCaptor.forClass(java.util.function.Consumer.class);
+		verify(created).onClick(onClick.capture());
+		onClick.getValue().accept(created);
+
+		ArgumentCaptor<String> written = ArgumentCaptor.forClass(String.class);
+		verify(configManager).setConfiguration(eq(AlchBlockerConfig.GROUP), eq("itemList"), written.capture());
+		assertTrue("the wildcard pattern must survive", written.getValue().contains("*(4)"));
+		assertTrue("the exact name must be appended", written.getValue().contains("Prayer potion(4)"));
+	}
+
+	@Test
+	public void shiftClickWorksInTheExplorersRingContainerAndIsIgnoredElsewhere()
+	{
+		when(config.shiftClickAddsToList()).thenReturn(true);
+		when(client.isKeyPressed(KeyCode.KC_SHIFT)).thenReturn(true);
+
+		Widget ringSlot = mock(Widget.class);
+		when(ringSlot.getId()).thenReturn(InterfaceID.LumbridgeAlchemy.ITEMS);
+		when(ringSlot.getItemId()).thenReturn(BONES);
+		when(ringSlot.getName()).thenReturn("Bones");
+
+		MenuEntry created = mock(MenuEntry.class, withSettings().defaultAnswer(Mockito.RETURNS_SELF));
+		when(menu.createMenuEntry(-1)).thenReturn(created);
+		postMenuSort(itemMenuEntry(ringSlot));
+		verify(menu, Mockito.times(1)).createMenuEntry(-1);
+
+		// No item on the widget: ignored, no further entries created
+		Widget noItem = mock(Widget.class);
+		when(noItem.getId()).thenReturn(InterfaceID.Inventory.ITEMS);
+		when(noItem.getItemId()).thenReturn(-1);
+		postMenuSort(itemMenuEntry(noItem));
+		verify(menu, Mockito.times(1)).createMenuEntry(anyInt());
+
+		// A non-inventory, non-ring container: ignored, still no further entries created
+		Widget elsewhere = mock(Widget.class);
+		when(elsewhere.getId()).thenReturn(InterfaceID.MagicSpellbook.HIGH_ALCHEMY);
+		when(elsewhere.getItemId()).thenReturn(BONES);
+		postMenuSort(itemMenuEntry(elsewhere));
+		verify(menu, Mockito.times(1)).createMenuEntry(anyInt());
 	}
 
 	@Test

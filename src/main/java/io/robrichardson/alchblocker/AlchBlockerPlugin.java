@@ -19,12 +19,14 @@ import io.robrichardson.alchblocker.config.ListType;
 import lombok.extern.slf4j.Slf4j;
 import net.runelite.api.ChatMessageType;
 import net.runelite.api.Client;
+import net.runelite.api.KeyCode;
 import net.runelite.api.MenuAction;
 import net.runelite.api.MenuEntry;
 import net.runelite.api.ScriptID;
 import net.runelite.api.events.GameTick;
 import net.runelite.api.events.MenuOpened;
 import net.runelite.api.events.MenuOptionClicked;
+import net.runelite.api.events.PostMenuSort;
 import net.runelite.api.events.ScriptPostFired;
 import net.runelite.api.events.WidgetClosed;
 import net.runelite.api.events.WidgetLoaded;
@@ -295,6 +297,86 @@ public class AlchBlockerPlugin extends Plugin
 		}
 	}
 
+	/**
+	 * Rob's ask: shift-click an inventory item to add its raw name to the item list (shift-click
+	 * again to remove it). Detected in PostMenuSort rather than MenuOpened/MenuEntryAdded because a
+	 * shift-click is a *left*-click, whose action is whatever entry is last in the sorted menu -
+	 * PostMenuSort fires exactly once per rebuild, right after sorting and only when the menu isn't
+	 * open, so there's nothing to dedupe. Off by default: shift-left-click on an inventory item is
+	 * already Menu Entry Swapper's shift-click-drop shortcut for a lot of users.
+	 */
+	@Subscribe
+	public void onPostMenuSort(PostMenuSort event) {
+		if (!config.shiftClickAddsToList() || !client.isKeyPressed(KeyCode.KC_SHIFT)) {
+			return;
+		}
+
+		MenuEntry[] entries = client.getMenu().getMenuEntries();
+		if (entries.length == 0) {
+			return;
+		}
+
+		// The last entry is the one a left-click actually performs.
+		Widget w = entries[entries.length - 1].getWidget();
+		if (w == null || w.getItemId() <= -1) {
+			return;
+		}
+		int container = w.getId();
+		if (container != INVENTORY_WIDGET_ID && container != EXPLORERS_RING_INVENTORY_WIDGET_ID) {
+			return;
+		}
+
+		final String itemName = w.getName();
+		final String plainName = Text.removeTags(itemName).replace(' ', ' ').trim();
+		final boolean listed = exactMatches.contains(plainName.toLowerCase());
+
+		client.getMenu().createMenuEntry(-1)
+			.setOption(listed ? "Remove from Alch list" : (config.listType() == ListType.BLACKLIST ? "Blacklist Alchemy" : "Whitelist Alchemy"))
+			.setTarget(itemName)
+			.setType(MenuAction.RUNELITE)
+			.onClick(e -> {
+				if (listed) {
+					removeFromItemList(plainName);
+				} else {
+					addToItemList(plainName);
+				}
+			});
+	}
+
+	/** Appends the item's exact name to the item list - never a wildcard. */
+	private void addToItemList(String plainName) {
+		configManager.setConfiguration(AlchBlockerConfig.GROUP, "itemList", config.itemList().concat("\n" + plainName));
+		showBlockedItems();
+	}
+
+	/** Drops the line(s) matching the item's exact name; wildcard patterns are never touched. */
+	private void removeFromItemList(String plainName) {
+		String lower = plainName.toLowerCase();
+		StringBuilder result = new StringBuilder();
+		for (String line : config.itemList().split("\n")) {
+			String trimmed = line.trim();
+			if (trimmed.isEmpty()) {
+				continue;
+			}
+			if (trimmed.contains(",")) {
+				// Legacy CSV line: drop just the matching token(s), keep the rest.
+				List<String> kept = new ArrayList<>();
+				for (String token : Text.fromCSV(trimmed)) {
+					if (!token.trim().toLowerCase().equals(lower)) {
+						kept.add(token.trim());
+					}
+				}
+				if (!kept.isEmpty()) {
+					result.append(String.join(", ", kept)).append("\n");
+				}
+			} else if (!trimmed.toLowerCase().equals(lower)) {
+				result.append(trimmed).append("\n");
+			}
+		}
+		configManager.setConfiguration(AlchBlockerConfig.GROUP, "itemList", result.toString());
+		showBlockedItems();
+	}
+
 	@Subscribe
 	public void onMenuOpened(final MenuOpened event)
 	{
@@ -334,11 +416,7 @@ public class AlchBlockerPlugin extends Plugin
 				.setOption(config.listType() == ListType.BLACKLIST ? "Blacklist Alchemy" : "Whitelist Alchemy")
 				.setTarget(itemName)
 				.setType(MenuAction.RUNELITE)
-				.onClick(e ->
-				{
-					configManager.setConfiguration(AlchBlockerConfig.GROUP, "itemList", config.itemList().concat("\n" + plainItemName));
-					showBlockedItems();
-				});
+				.onClick(e -> addToItemList(plainItemName));
 			return;
 		}
 	}
