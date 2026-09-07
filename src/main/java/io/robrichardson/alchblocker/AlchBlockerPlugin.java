@@ -239,6 +239,8 @@ public class AlchBlockerPlugin extends Plugin
 	public void onProfileChanged(ProfileChanged event) {
 		migrate();
 		parseItemLists();
+		// A live allowance must not survive into the new profile's rules (recommended finding #5).
+		clearAllowance();
 		clientThread.invokeAtTickEnd(this::refreshItemVisibility);
 	}
 
@@ -318,13 +320,19 @@ public class AlchBlockerPlugin extends Plugin
 			? Text.removeTags(w.getName()).replace(' ', ' ').trim()
 			: "this item";
 		final boolean ringPowered = w != null && w.getId() == EXPLORERS_RING_INVENTORY_WIDGET_ID;
+		// Option 3's wording must match what applyPrimaryListAction actually writes (review finding
+		// #4): a helper-rule-only block writes a "!" line, so "always allow" is accurate there; a
+		// plain list block moves the item to the whitelist, so it must read "whitelist" instead - a
+		// plain whitelist line is worded "always allow" would be misleading, since any helper rule
+		// enabled later would still override it.
+		final String verb = isBlockedOnlyByHelperRules(itemId, name, ringPowered) ? "always allow" : "whitelist";
 		promptOpen = true;
 
 		ChatboxTextMenuInput input = chatboxPanelManager
 			.openTextMenuInput("Alch Blocker: cast " + name + "?")
 			.option("1. No, don't cast", () -> { })
 			.option("2. Yes, cast this once", () -> grantAllowance(itemId))
-			.option("3. Yes, and always allow " + name, () -> {
+			.option("3. Yes, and " + verb + " " + name, () -> {
 				applyPrimaryListAction(itemId, name, ringPowered);
 				grantAllowance(itemId);
 			});
@@ -490,6 +498,12 @@ public class AlchBlockerPlugin extends Plugin
 	 * shift-click always offer the same one thing, computed the same way.
 	 */
 	private String primaryListActionLabel(int itemId, String plainName, boolean ringPowered) {
+		if (isExcluded(plainName.toLowerCase())) {
+			// Otherwise an already-excluded item would be offered "Blacklist Alchemy": a silent,
+			// self-repeating no-op, since a plain line can never override the "!" line that beats it
+			// (review finding #2).
+			return "Remove always-allow";
+		}
 		if (isBlockedOnlyByHelperRules(itemId, plainName, ringPowered)) {
 			return "Always allow Alchemy";
 		}
@@ -504,13 +518,20 @@ public class AlchBlockerPlugin extends Plugin
 	 * shift-click, and the CONFIRM prompt's "always allow" option (card #9 spec section 5).
 	 */
 	private void applyPrimaryListAction(int itemId, String plainName, boolean ringPowered) {
+		String lower = plainName.toLowerCase();
+		if (isExcluded(lower)) {
+			// Undo an "always allow": a "!" line can live in either box (pooling), so both must be
+			// checked (review finding #2).
+			removeExclusion(plainName);
+			return;
+		}
+
 		if (isBlockedOnlyByHelperRules(itemId, plainName, ringPowered)) {
 			// The plugin's own "!" writes always go to the whitelist box (card #9 spec section 3).
 			addToList(WHITELIST_KEY, "!" + plainName);
 			return;
 		}
 
-		String lower = plainName.toLowerCase();
 		if (whitelistExact.contains(lower)) {
 			removeFromList(WHITELIST_KEY, plainName);
 			return;
@@ -536,8 +557,23 @@ public class AlchBlockerPlugin extends Plugin
 
 	/** Drops the line(s) matching the item's exact name from the given list; wildcard patterns are never touched. */
 	private void removeFromList(String key, String plainName) {
+		removeMatchingLines(key, plainName.toLowerCase());
+	}
+
+	/**
+	 * Undoes an "always allow": drops the "!" line for this item from BOTH boxes, since "!" lines are
+	 * pooled across the blacklist and whitelist boxes and the caller doesn't know - and shouldn't need
+	 * to know - which box it actually lives in (review finding #2).
+	 */
+	private void removeExclusion(String plainName) {
+		String target = "!" + plainName.toLowerCase();
+		removeMatchingLines(BLACKLIST_KEY, target);
+		removeMatchingLines(WHITELIST_KEY, target);
+	}
+
+	/** Drops the line(s) matching {@code target} (already lowercased) from the given list. */
+	private void removeMatchingLines(String key, String target) {
 		String current = BLACKLIST_KEY.equals(key) ? config.blacklist() : config.whitelist();
-		String lower = plainName.toLowerCase();
 		StringBuilder result = new StringBuilder();
 		for (String line : current.split("\n")) {
 			String trimmed = line.trim();
@@ -548,14 +584,14 @@ public class AlchBlockerPlugin extends Plugin
 				// Legacy CSV line: drop just the matching token(s), keep the rest.
 				List<String> kept = new ArrayList<>();
 				for (String token : Text.fromCSV(trimmed)) {
-					if (!token.trim().toLowerCase().equals(lower)) {
+					if (!token.trim().toLowerCase().equals(target)) {
 						kept.add(token.trim());
 					}
 				}
 				if (!kept.isEmpty()) {
 					result.append(String.join(", ", kept)).append("\n");
 				}
-			} else if (!trimmed.toLowerCase().equals(lower)) {
+			} else if (!trimmed.toLowerCase().equals(target)) {
 				result.append(trimmed).append("\n");
 			}
 		}
@@ -622,6 +658,13 @@ public class AlchBlockerPlugin extends Plugin
 
 		for (Widget inventoryItem : Objects.requireNonNull(inventory.getChildren())) {
 			int itemId = inventoryItem.getItemId();
+
+			// An empty slot's item id is -1: skip it outright before any helper-rule lookup runs,
+			// rather than letting it fall through to isBlockedByHelperRules(-1, ...), which would be
+			// an unguarded ItemManager lookup for a nonexistent item on every redraw (review finding #1).
+			if (itemId == -1) {
+				continue;
+			}
 
 			// allowedItemId is -1 when there is no live allowance, and an empty slot's item id is
 			// also -1 - guard the sentinel so an empty slot is never treated as "the confirmed item"
@@ -825,21 +868,21 @@ public class AlchBlockerPlugin extends Plugin
 	}
 
 	/**
-	 * True when an item is blocked solely by a helper rule - not excluded, not exempt, and not
-	 * already blocked by the list itself. In WHITELIST mode every unlisted item is already
-	 * list-blocked, so without the "list would have allowed it" check this hijacks the normal
-	 * Whitelist/Blacklist Alchemy entry for every helper-rule-blocked unlisted item (review finding #3,
-	 * generalised from the noted-only rule to every helper rule per card #8).
+	 * True when a helper rule blocks this item - not excluded, not exempt. Deliberately does NOT
+	 * additionally require "the list would otherwise have allowed it": since a "!" line is an
+	 * unconditional always-allow (card #9), "Always allow Alchemy" is both the truthful label and a
+	 * one-click fix even when the list also blocks the item - offering "Whitelist Alchemy" instead
+	 * would be a dead first click, because the whitelist sits below helper rules in the precedence
+	 * table and the item would stay dimmed (review finding #3; this replaces the older
+	 * "list would have allowed it" guard from card #4's review, which existed only because "!" was
+	 * still polarity-dependent back then).
 	 */
 	private boolean isBlockedOnlyByHelperRules(int itemId, String plainName, boolean ringPowered) {
 		String lower = plainName.toLowerCase();
 		if (!anyHelperRuleEnabled() || isExcluded(lower) || HELPER_RULE_EXEMPT_ITEMS.contains(itemId)) {
 			return false;
 		}
-		if (!isBlockedByHelperRules(itemId, currentAlchContext(ringPowered))) {
-			return false;
-		}
-		return !isBlockedByListOnly(itemId, lower);
+		return isBlockedByHelperRules(itemId, currentAlchContext(ringPowered));
 	}
 
 	private void showBlockedItems() {

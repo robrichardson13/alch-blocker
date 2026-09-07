@@ -18,9 +18,12 @@ Allows you to block items from being alched
 A blacklist and a whitelist are both always active - the whitelist beats the blacklist, so it's
 the natural place to carve out exceptions. An "Unlisted items" setting decides what happens to an
 item that's on neither list: Allow (only the blacklist blocks) or Block (only the whitelist can
-alch). Right-click an inventory item while an alchemy spell is selected for a
-"Blacklist Alchemy"/"Whitelist Alchemy" option that moves it to the right list, or hold shift and
-left-click it to do the same thing without the menu.
+alch). Right-click an inventory item while an alchemy spell is selected for a single context menu
+option that always does the one useful thing for that item's current state -
+"Blacklist Alchemy"/"Whitelist Alchemy" moves it to the right list, "Remove from whitelist" takes
+it off, "Always allow Alchemy" writes a `!` line for an item blocked only by a helper rule, and
+"Remove always-allow" removes that `!` line again - or hold shift and left-click it to do the same
+thing without the menu.
 
 A `!` prefix on a line in either box always allows that item, overriding both lists and every
 helper rule below.
