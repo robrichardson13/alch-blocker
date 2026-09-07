@@ -56,6 +56,8 @@ public class AlchBlockerPlugin extends Plugin
 
 	Set<String> exactMatches = new HashSet<>();
 	List<String> wildcardPatterns = new ArrayList<>();
+	Set<String> exactExclusions = new HashSet<>();
+	List<String> wildcardExclusions = new ArrayList<>();
 	Map<Integer, Boolean> blockedItemCache = new HashMap<>();
 	Set<Integer> hiddenItems = new HashSet<>();
 
@@ -267,6 +269,15 @@ public class AlchBlockerPlugin extends Plugin
 	}
 
 	private boolean isItemInBlockList(String itemName) {
+		// Exclusions ("!" prefix) are checked first and always win, regardless of list order.
+		if (exactExclusions.contains(itemName)) {
+			return false;
+		}
+		for (String pattern : wildcardExclusions) {
+			if (WildcardMatcher.matches(pattern, itemName)) {
+				return false;
+			}
+		}
 		// O(1) lookup for exact matches
 		if (exactMatches.contains(itemName)) {
 			return true;
@@ -305,6 +316,8 @@ public class AlchBlockerPlugin extends Plugin
 	private void parseItemList() {
 		exactMatches.clear();
 		wildcardPatterns.clear();
+		exactExclusions.clear();
+		wildcardExclusions.clear();
 
 		for (String listItem : config.itemList().split("\n")) {
 			if (listItem.trim().isEmpty()) continue;
@@ -324,10 +337,19 @@ public class AlchBlockerPlugin extends Plugin
 	}
 
 	private void addToAppropriateCollection(String item) {
+		boolean exclusion = item.startsWith("!");
+		if (exclusion) {
+			item = item.substring(1).trim();
+			if (item.isEmpty()) {
+				// A bare "!" line has nothing to exclude; ignore it rather than matching everything.
+				return;
+			}
+		}
+
 		if (item.contains("*")) {
-			wildcardPatterns.add(item);
+			(exclusion ? wildcardExclusions : wildcardPatterns).add(item);
 		} else {
-			exactMatches.add(item);
+			(exclusion ? exactExclusions : exactMatches).add(item);
 		}
 	}
 }

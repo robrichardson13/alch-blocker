@@ -211,6 +211,128 @@ public class AlchBlockerPluginBehaviourTest
 		verify(created).setOption("Blacklist Alchemy");
 	}
 
+	/** Sets up an inventory of two slots and returns them, replacing the default coins/bones inventory. */
+	private Slot[] inventoryOf(Slot a, Slot b)
+	{
+		Widget inventory = mock(Widget.class);
+		when(inventory.getId()).thenReturn(InterfaceID.Inventory.ITEMS);
+		when(inventory.getChildren()).thenReturn(new Widget[]{a.widget, b.widget});
+		when(client.getWidget(InterfaceID.Inventory.ITEMS)).thenReturn(inventory);
+		return new Slot[]{a, b};
+	}
+
+	private MenuOptionClicked alchClick(Slot slot)
+	{
+		return new MenuOptionClicked(alchEntry(slot, "Cast", "<col=00ff00>High Level Alchemy</col> -> <col=ff9040>x</col>"));
+	}
+
+	/** Issue #36: a "!" prefix line is an exception that overrides a wildcard pattern. */
+	@Test
+	public void exclusionOverridesWildcardInBlacklistMode()
+	{
+		when(config.itemList()).thenReturn("*(4)\n!prayer potion(4)");
+		plugin.onConfigChanged(configChanged("itemList"));
+
+		Slot prayerPotion = new Slot(InterfaceID.Inventory.ITEMS, 2434, "Prayer potion(4)");
+		Slot superCombat = new Slot(InterfaceID.Inventory.ITEMS, 12695, "Super combat potion(4)");
+		inventoryOf(prayerPotion, superCombat);
+
+		selectSpell(highAlchSpell);
+		redrawInventory();
+
+		assertEquals("prayer potion excluded, must stay visible", 0, prayerPotion.opacity);
+		assertFalse(prayerPotion.hidden);
+		assertEquals("super combat potion still matched by wildcard", 200, superCombat.opacity);
+
+		MenuOptionClicked prayerClick = alchClick(prayerPotion);
+		plugin.onMenuOptionClicked(prayerClick);
+		assertFalse("excluded item's alch click must not be consumed", prayerClick.isConsumed());
+
+		MenuOptionClicked combatClick = alchClick(superCombat);
+		plugin.onMenuOptionClicked(combatClick);
+		assertTrue("blocked item's alch click must be consumed", combatClick.isConsumed());
+	}
+
+	/** Issue #36: exclusion polarity flips correctly under WHITELIST too. */
+	@Test
+	public void exclusionOverridesWildcardInWhitelistMode()
+	{
+		when(config.listType()).thenReturn(ListType.WHITELIST);
+		when(config.itemList()).thenReturn("*(4)\n!prayer potion(4)");
+		plugin.onConfigChanged(configChanged("itemList"));
+
+		Slot prayerPotion = new Slot(InterfaceID.Inventory.ITEMS, 2434, "Prayer potion(4)");
+		Slot superCombat = new Slot(InterfaceID.Inventory.ITEMS, 12695, "Super combat potion(4)");
+		inventoryOf(prayerPotion, superCombat);
+
+		selectSpell(highAlchSpell);
+		redrawInventory();
+
+		assertEquals("prayer potion excluded from the whitelisted set, so it is blocked", 200, prayerPotion.opacity);
+		assertEquals("super combat potion is whitelisted via the wildcard, so it stays alchable", 0, superCombat.opacity);
+	}
+
+	/** Issue #36: "!" exclusions support wildcards themselves and apply regardless of line order. */
+	@Test
+	public void exclusionSupportsWildcardsAndIsOrderIndependent()
+	{
+		Slot prayerPotion = new Slot(InterfaceID.Inventory.ITEMS, 2434, "Prayer potion(4)");
+		Slot superCombat = new Slot(InterfaceID.Inventory.ITEMS, 12695, "Super combat potion(4)");
+
+		when(config.itemList()).thenReturn("*potion*\n!*prayer*");
+		plugin.onConfigChanged(configChanged("itemList"));
+		inventoryOf(prayerPotion, superCombat);
+		selectSpell(highAlchSpell);
+		redrawInventory();
+		assertEquals(0, prayerPotion.opacity);
+		assertEquals(200, superCombat.opacity);
+
+		// Reversed order, fresh slots so the cache/hidden state from the pass above can't leak in
+		Slot prayerPotion2 = new Slot(InterfaceID.Inventory.ITEMS, 2434, "Prayer potion(4)");
+		Slot superCombat2 = new Slot(InterfaceID.Inventory.ITEMS, 12695, "Super combat potion(4)");
+		when(config.itemList()).thenReturn("!*prayer*\n*potion*");
+		plugin.onConfigChanged(configChanged("itemList"));
+		inventoryOf(prayerPotion2, superCombat2);
+		redrawInventory();
+		assertEquals(0, prayerPotion2.opacity);
+		assertEquals(200, superCombat2.opacity);
+	}
+
+	/** Issue #36: parsing handles a CSV exception, a bare "!" line, and whitespace around the name. */
+	@Test
+	public void exclusionParsingHandlesCsvBareBangAndWhitespace()
+	{
+		when(config.itemList()).thenReturn("*(4), !prayer potion(4)\n!\n! coins \n");
+		plugin.onConfigChanged(configChanged("itemList"));
+
+		Slot prayerPotion = new Slot(InterfaceID.Inventory.ITEMS, 2434, "Prayer potion(4)");
+		Slot superCombat = new Slot(InterfaceID.Inventory.ITEMS, 12695, "Super combat potion(4)");
+		inventoryOf(prayerPotion, superCombat);
+		selectSpell(highAlchSpell);
+		redrawInventory();
+		assertEquals("CSV exception applies", 0, prayerPotion.opacity);
+		assertEquals(200, superCombat.opacity);
+
+		// "coins" was excluded (with surrounding whitespace trimmed) and the default Rune pouch
+		// pattern must still be intact (regression guard on parseItemList's default list).
+		when(config.itemList()).thenReturn("*Rune Pouch\n! coins ");
+		plugin.onConfigChanged(configChanged("itemList"));
+		Slot runePouch = new Slot(InterfaceID.Inventory.ITEMS, 27281, "Rune pouch");
+		Slot coinsSlot = new Slot(InterfaceID.Inventory.ITEMS, COINS, "Coins");
+		inventoryOf(runePouch, coinsSlot);
+		redrawInventory();
+		assertEquals(200, runePouch.opacity);
+		assertEquals("coins excluded", 0, coinsSlot.opacity);
+	}
+
+	private ConfigChanged configChanged(String key)
+	{
+		ConfigChanged change = new ConfigChanged();
+		change.setGroup(AlchBlockerConfig.GROUP);
+		change.setKey(key);
+		return change;
+	}
+
 	@Test
 	public void contextMenuEntryNotAddedForAlreadyBlockedItemOrNonAlchMenus()
 	{

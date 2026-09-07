@@ -47,7 +47,7 @@ public interface AlchBlockerConfig extends Config
 	@ConfigItem(
 		keyName = "itemList",
 		name = "Item list",
-		description = "Configures the list of items to block or unblock from being alched. Format: (item), (item). Example: fire rune, prayer potion*",
+		description = "Configures the list of items to block or unblock from being alched. Format: (item), (item). Example: fire rune, prayer potion*. Prefix a line with ! to make an exception that overrides the other lines, e.g. *(4) then !prayer potion(4).",
 		position = 3
 	)
 	default String itemList()
