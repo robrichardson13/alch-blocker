@@ -19,12 +19,13 @@ dependencies {
 	annotationProcessor 'org.projectlombok:lombok:1.18.20'
 
 	testImplementation 'junit:junit:4.12'
+	testImplementation 'org.mockito:mockito-core:3.12.4'
 	testImplementation group: 'net.runelite', name:'client', version: runeLiteVersion
 	testImplementation group: 'net.runelite', name:'jshell', version: runeLiteVersion
 }
 
 group = 'io.robrichardson.alchblocker'
-version = '1.8'
+version = '1.9'
 sourceCompatibility = '1.8'
 
 tasks.withType(JavaCompile) {
@@ -43,6 +44,10 @@ task runClient(type: JavaExec) {
 		'--add-opens', 'java.desktop/sun.awt=ALL-UNNAMED',
 		'--add-opens', 'java.desktop/java.awt=ALL-UNNAMED'
 	]
+	if (project.hasProperty('nbsp')) {
+		// Load the dev-only NBSP menu simulator plugin (see NbspMenuSimulatorPlugin)
+		systemProperty 'alchblocker.nbspSimulator', 'true'
+	}
 	args = [
 		'--developer-mode',
 		'--debug',
