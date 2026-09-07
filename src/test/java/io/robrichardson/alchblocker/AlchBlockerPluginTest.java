@@ -7,7 +7,15 @@ public class AlchBlockerPluginTest
 {
 	public static void main(String[] args) throws Exception
 	{
-		ExternalPluginManager.loadBuiltin(AlchBlockerPlugin.class);
+		if (Boolean.getBoolean("alchblocker.nbspSimulator"))
+		{
+			// ./gradlew runClient -Pnbsp — reproduces issue #45 (non-breaking spaces in the Cast menu line)
+			ExternalPluginManager.loadBuiltin(AlchBlockerPlugin.class, NbspMenuSimulatorPlugin.class);
+		}
+		else
+		{
+			ExternalPluginManager.loadBuiltin(AlchBlockerPlugin.class);
+		}
 		RuneLite.main(args);
 	}
 }

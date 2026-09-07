@@ -25,9 +25,7 @@ import net.runelite.api.events.MenuOptionClicked;
 import net.runelite.api.events.ScriptPostFired;
 import net.runelite.api.events.WidgetClosed;
 import net.runelite.api.events.WidgetLoaded;
-import net.runelite.api.gameval.InterfaceID.MagicSpellbook;
-import net.runelite.api.widgets.ComponentID;
-import net.runelite.api.widgets.InterfaceID;
+import net.runelite.api.gameval.InterfaceID;
 import net.runelite.api.widgets.Widget;
 import net.runelite.client.callback.ClientThread;
 import net.runelite.client.config.ConfigManager;
@@ -61,8 +59,13 @@ public class AlchBlockerPlugin extends Plugin
 	Map<Integer, Boolean> blockedItemCache = new HashMap<>();
 	Set<Integer> hiddenItems = new HashSet<>();
 
-	private static final int HIGH_ALCHEMY_WIDGET_ID = MagicSpellbook.HIGH_ALCHEMY;
-	private static final int LOW_ALCHEMY_WIDGET_ID  = MagicSpellbook.LOW_ALCHEMY;
+	private static final int HIGH_ALCHEMY_WIDGET_ID = InterfaceID.MagicSpellbook.HIGH_ALCHEMY;
+	private static final int LOW_ALCHEMY_WIDGET_ID  = InterfaceID.MagicSpellbook.LOW_ALCHEMY;
+	private static final int INVENTORY_WIDGET_ID = InterfaceID.Inventory.ITEMS;
+	private static final int EXPLORERS_RING_INVENTORY_WIDGET_ID = InterfaceID.LumbridgeAlchemy.ITEMS;
+	private static final int EXPLORERS_RING_GROUP_ID = InterfaceID.LUMBRIDGE_ALCHEMY;
+
+	private static final int BLOCKED_OPACITY = 200;
 
 	@Override
 	protected void startUp() throws Exception {
@@ -84,15 +87,19 @@ public class AlchBlockerPlugin extends Plugin
 		if (!AlchBlockerConfig.GROUP.equals(event.getGroup())) return;
 		parseItemList();
 		blockedItemCache.clear();
-		clientThread.invokeAtTickEnd(this::updateItemVisibility);
+		// Restore everything first so a display type change mid-alch doesn't leave items
+		// stuck with the old display type's opacity/hidden state (issue #17), then re-apply.
+		clientThread.invokeAtTickEnd(() -> {
+			showBlockedItems();
+			updateItemVisibility();
+		});
 	}
 
 	@Subscribe()
 	public void onMenuOptionClicked(MenuOptionClicked event) {
-		String menuTarget = Text.removeTags(event.getMenuTarget());
-		// did you just click an item to try to alch it ("High-Alchemy <item>" from explorer's ring, "Cast High Level Alchemy -> <item>" from spell)
-		boolean tryingToAlch = event.getMenuOption().contains("-Alchemy") || (event.getMenuOption().equals("Cast") && menuTarget.contains("Alchemy ->"));
-		if (tryingToAlch && hiddenItems.contains(event.getItemId())) {
+		MenuEntry entry = event.getMenuEntry();
+		// did you just click an item to try to alch it (spell on an inventory item, or an explorer's ring slot)
+		if (isAlchOnItemEntry(entry) && hiddenItems.contains(getEntryItemId(entry))) {
 			event.consume();
 		}
 		// Check spell state after any click (handles clicking blank spot to cancel)
@@ -100,7 +107,7 @@ public class AlchBlockerPlugin extends Plugin
 	}
 
 	@Subscribe
-	private void onScriptPostFired(ScriptPostFired event) {
+	public void onScriptPostFired(ScriptPostFired event) {
 		if (event.getScriptId() == ScriptID.INVENTORY_DRAWITEM) {
 			// Use invokeAtTickEnd to check spell selection after the client state is updated
 			clientThread.invokeAtTickEnd(this::updateItemVisibility);
@@ -125,19 +132,54 @@ public class AlchBlockerPlugin extends Plugin
 	}
 
 	private boolean isExplorerRingOpen() {
-		return client.getWidget(ComponentID.EXPLORERS_RING_INVENTORY) != null;
+		return client.getWidget(EXPLORERS_RING_INVENTORY_WIDGET_ID) != null;
+	}
+
+	/**
+	 * Whether this menu entry is an attempt to alch an item. Decided from the entry type and the
+	 * widgets involved rather than the option/target text, because other plugins (e.g. Remaining
+	 * Casts) rewrite that text and the client may use non-breaking spaces in it (issues #30, #45, #46).
+	 * The text check is kept only as a fallback.
+	 */
+	private boolean isAlchOnItemEntry(MenuEntry entry) {
+		Widget w = entry.getWidget();
+		if (w == null || w.getItemId() <= -1) {
+			return false;
+		}
+
+		if (w.getId() == EXPLORERS_RING_INVENTORY_WIDGET_ID) {
+			// Explorer's ring slots offer "High-Alchemy" / "Low-Alchemy" (plus Examine etc.)
+			return normalize(entry.getOption()).contains("alchemy");
+		}
+
+		if (entry.getType() == MenuAction.WIDGET_TARGET_ON_WIDGET && isAlchSpellSelected()) {
+			return true;
+		}
+
+		// Fallback: "Cast High Level Alchemy -> <item>"
+		return normalize(entry.getOption()).equals("cast") && normalize(entry.getTarget()).contains("level alchemy");
+	}
+
+	private static int getEntryItemId(MenuEntry entry) {
+		Widget w = entry.getWidget();
+		return w != null && w.getItemId() > -1 ? w.getItemId() : entry.getItemId();
+	}
+
+	/** Strip tags, swap non-breaking spaces for regular spaces, trim and lowercase. */
+	private static String normalize(String s) {
+		return s == null ? "" : Text.standardize(s);
 	}
 
 	@Subscribe
-	private void onWidgetLoaded(WidgetLoaded event) {
-		if (event.getGroupId() == InterfaceID.EXPLORERS_RING) {
+	public void onWidgetLoaded(WidgetLoaded event) {
+		if (event.getGroupId() == EXPLORERS_RING_GROUP_ID) {
 			clientThread.invokeAtTickEnd(this::hideBlockedItems);
 		}
 	}
 
 	@Subscribe
-	private void onWidgetClosed(WidgetClosed event) {
-		if (event.getGroupId() == InterfaceID.EXPLORERS_RING) {
+	public void onWidgetClosed(WidgetClosed event) {
+		if (event.getGroupId() == EXPLORERS_RING_GROUP_ID) {
 			showBlockedItems();
 		}
 	}
@@ -154,42 +196,49 @@ public class AlchBlockerPlugin extends Plugin
 		for (int idx = entries.length - 1; idx >= 0; --idx)
 		{
 			final MenuEntry entry = entries[idx];
-			final Widget w = entry.getWidget();
-
-			if (w != null && w.getItemId() > -1)
-			{
-				if (entry.getOption().contains("-Alchemy") || (entry.getOption().equals("Cast") && entry.getTarget().contains("Level Alchemy"))) {
-					// Item already in block list, no need to add menu item
-					if (
-						(hiddenItems.contains(w.getItemId()) && config.listType() == ListType.BLACKLIST) ||
-						(!hiddenItems.contains(w.getItemId()) && config.listType() == ListType.WHITELIST)
-					) {
-						return;
-					}
-
-					final String itemName = w.getName();
-
-					client.createMenuEntry(idx)
-						.setOption(config.listType() == ListType.BLACKLIST ? "Blacklist Alchemy" : "Whitelist Alchemy")
-						.setTarget(itemName)
-						.setType(MenuAction.RUNELITE)
-						.onClick(e ->
-						{
-							configManager.setConfiguration(AlchBlockerConfig.GROUP, "itemList", config.itemList().concat("\n" + Text.removeTags(itemName)));
-							showBlockedItems();
-						});
-				}
+			if (!isAlchOnItemEntry(entry)) {
+				continue;
 			}
+
+			final Widget w = entry.getWidget();
+			final int itemId = w.getItemId();
+
+			// Item already in block list, no need to add menu item
+			if (
+				(hiddenItems.contains(itemId) && config.listType() == ListType.BLACKLIST) ||
+				(!hiddenItems.contains(itemId) && config.listType() == ListType.WHITELIST)
+			) {
+				return;
+			}
+
+			final String itemName = w.getName();
+			final String plainItemName = Text.removeTags(itemName).replace('\u00A0', ' ').trim();
+
+			client.getMenu().createMenuEntry(idx)
+				.setOption(config.listType() == ListType.BLACKLIST ? "Blacklist Alchemy" : "Whitelist Alchemy")
+				.setTarget(itemName)
+				.setType(MenuAction.RUNELITE)
+				.onClick(e ->
+				{
+					configManager.setConfiguration(AlchBlockerConfig.GROUP, "itemList", config.itemList().concat("\n" + plainItemName));
+					showBlockedItems();
+				});
+			return;
 		}
 	}
 
-	private void hideBlockedItems() {
-		Widget inventory = client.getWidget(ComponentID.EXPLORERS_RING_INVENTORY);
+	private Widget getActiveInventory() {
+		Widget inventory = client.getWidget(EXPLORERS_RING_INVENTORY_WIDGET_ID);
 		if (inventory == null) {
-			inventory = client.getWidget(ComponentID.INVENTORY_CONTAINER);
-			if (inventory == null) {
-				return;
-			}
+			inventory = client.getWidget(INVENTORY_WIDGET_ID);
+		}
+		return inventory;
+	}
+
+	private void hideBlockedItems() {
+		Widget inventory = getActiveInventory();
+		if (inventory == null) {
+			return;
 		}
 
 		for (Widget inventoryItem : Objects.requireNonNull(inventory.getChildren())) {
@@ -200,15 +249,15 @@ public class AlchBlockerPlugin extends Plugin
 			if (blockedItemCache.containsKey(itemId)) {
 				shouldBlock = blockedItemCache.get(itemId);
 			} else {
-				String itemName = Text.removeTags(inventoryItem.getName()).toLowerCase();
+				String itemName = normalize(inventoryItem.getName());
 				boolean matchesPattern = isItemInBlockList(itemName);
 				shouldBlock = (config.listType() == ListType.BLACKLIST) == matchesPattern;
 				blockedItemCache.put(itemId, shouldBlock);
 			}
 
 			if (shouldBlock) {
-				if (config.displayType() == DisplayType.TRANSPARENT || ComponentID.EXPLORERS_RING_INVENTORY == inventory.getId()) {
-					inventoryItem.setOpacity(200);
+				if (config.displayType() == DisplayType.TRANSPARENT || EXPLORERS_RING_INVENTORY_WIDGET_ID == inventory.getId()) {
+					inventoryItem.setOpacity(BLOCKED_OPACITY);
 				} else {
 					inventoryItem.setHidden(true);
 				}
@@ -236,21 +285,17 @@ public class AlchBlockerPlugin extends Plugin
 			return;
 		}
 
-		Widget inventory = client.getWidget(ComponentID.EXPLORERS_RING_INVENTORY);
+		Widget inventory = getActiveInventory();
 		if (inventory == null) {
-			inventory = client.getWidget(ComponentID.INVENTORY_CONTAINER);
-			if (inventory == null) {
-				return;
-			}
+			return;
 		}
 
 		for (Widget inventoryItem : Objects.requireNonNull(inventory.getChildren())) {
 			if(hiddenItems.contains(inventoryItem.getItemId())) {
-				if (config.displayType() == DisplayType.TRANSPARENT || ComponentID.EXPLORERS_RING_INVENTORY == inventory.getId()) {
-					inventoryItem.setOpacity(0);
-				} else {
-					inventoryItem.setHidden(false);
-				}
+				// Always reset both properties: the display type may have changed since the item was
+				// hidden, so restoring only the current type's property leaves items stuck (issue #17).
+				inventoryItem.setOpacity(0);
+				inventoryItem.setHidden(false);
 			}
 		}
 

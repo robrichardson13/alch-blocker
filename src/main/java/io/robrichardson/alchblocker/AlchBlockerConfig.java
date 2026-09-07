@@ -14,7 +14,7 @@ public interface AlchBlockerConfig extends Config
 	@ConfigItem(
 		keyName = "contextMenuEnabled",
 		name = "Context menu add item",
-		description = "Allow right clicking an item to add to the list.",
+		description = "Adds a Blacklist/Whitelist Alchemy option when you right-click an inventory item while an alchemy spell is selected.",
 		position = 0
 	)
 	default boolean contextMenuEnabled()
