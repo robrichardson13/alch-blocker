@@ -131,11 +131,16 @@ public class AlchBlockerPluginBehaviourTest
 		});
 		lenient().when(itemManager.getItemPrice(anyInt())).thenReturn(0);
 
+		lenient().when(client.getGameState()).thenReturn(GameState.LOGGED_IN);
+
 		menuInput = mock(ChatboxTextMenuInput.class, withSettings().defaultAnswer(Mockito.RETURNS_SELF));
 		lenient().when(chatboxPanelManager.openTextMenuInput(anyString())).thenReturn(menuInput);
 		lenient().when(chatboxPanelManager.getCurrentInput()).thenReturn(null);
+		// The chatbox dialog layer (MES_LAYER) is hidden during ordinary gameplay - it is only
+		// unhidden by ChatboxPanelManager itself when it opens an input (card #18). Reflect that
+		// reality here so the suite exercises the real client state, not an inverted one.
 		Widget chatboxContainer = mock(Widget.class);
-		when(chatboxContainer.isHidden()).thenReturn(false);
+		when(chatboxContainer.isHidden()).thenReturn(true);
 		lenient().when(chatboxPanelManager.getContainerWidget()).thenReturn(chatboxContainer);
 
 		coins = new Slot(InterfaceID.Inventory.ITEMS, COINS, "Coins");
@@ -949,17 +954,42 @@ public class AlchBlockerPluginBehaviourTest
 	}
 
 	/**
+	 * Card #18 root cause: {@code getContainerWidget()} returns the chatbox dialog layer, which is
+	 * hidden during ordinary gameplay and only unhidden by {@code ChatboxPanelManager} itself when it
+	 * opens an input. A pre-check that requires it to already be visible can therefore never pass, so
+	 * the CONFIRM prompt never opens and every blocked click falls through to the chat-line fallback
+	 * instead. The guard must be dropped; only "another plugin already owns the panel" and "not logged
+	 * in" are legitimate reasons to fall back.
+	 */
+	@Test
+	public void confirmModePromptOpensEvenThoughTheChatboxDialogLayerIsHiddenBeforeMessageLayerOpen()
+	{
+		when(config.blockedItemAction()).thenReturn(BlockedItemAction.CONFIRM);
+		selectSpell(highAlchSpell);
+		redrawInventory();
+
+		MenuOptionClicked click = alchClick(coins);
+		plugin.onMenuOptionClicked(click);
+
+		assertTrue("the click must be consumed so the game doesn't also alch the item", click.isConsumed());
+		verify(chatboxPanelManager).openTextMenuInput(contains("Coins"));
+		verify(client, never()).addChatMessage(eq(ChatMessageType.GAMEMESSAGE), anyString(), contains("Alch Blocker blocked"), any());
+	}
+
+	/**
 	 * Review finding #6 (card #4): card #2's spec calls the fallback chat message "rate-limited to
 	 * once per allowance window". Alching is a spam-click activity, so without rate limiting every
 	 * blocked click spams "Alch Blocker blocked that item." while the chatbox is unavailable.
+	 *
+	 * Card #18: a hidden container no longer forces the fallback (that's the normal, pre-prompt
+	 * state), so this drives the fallback the two ways that remain legitimate: no container widget at
+	 * all, and not being logged in.
 	 */
 	@Test
 	public void fallbackChatMessageIsRateLimitedWhenTheChatboxIsUnavailable()
 	{
 		when(config.blockedItemAction()).thenReturn(BlockedItemAction.CONFIRM);
-		Widget chatboxContainer = mock(Widget.class);
-		when(chatboxContainer.isHidden()).thenReturn(true);
-		when(chatboxPanelManager.getContainerWidget()).thenReturn(chatboxContainer);
+		when(chatboxPanelManager.getContainerWidget()).thenReturn(null);
 		selectSpell(highAlchSpell);
 		redrawInventory();
 
@@ -969,6 +999,25 @@ public class AlchBlockerPluginBehaviourTest
 
 		verify(client, Mockito.times(1))
 			.addChatMessage(eq(ChatMessageType.GAMEMESSAGE), anyString(), anyString(), any());
+	}
+
+	/**
+	 * Card #18: the other legitimate fallback trigger - the player isn't logged in (e.g. a stray
+	 * event during the login transition).
+	 */
+	@Test
+	public void fallbackChatMessageIsUsedWhenNotLoggedIn()
+	{
+		when(config.blockedItemAction()).thenReturn(BlockedItemAction.CONFIRM);
+		when(client.getGameState()).thenReturn(GameState.LOGIN_SCREEN);
+		selectSpell(highAlchSpell);
+		redrawInventory();
+
+		MenuOptionClicked click = alchClick(coins);
+		plugin.onMenuOptionClicked(click);
+
+		verify(chatboxPanelManager, never()).openTextMenuInput(anyString());
+		verify(client).addChatMessage(eq(ChatMessageType.GAMEMESSAGE), anyString(), contains("Alch Blocker blocked"), any());
 	}
 
 	/**

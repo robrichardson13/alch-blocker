@@ -306,8 +306,11 @@ public class AlchBlockerPlugin extends Plugin
 			return;
 		}
 
-		Widget container = chatboxPanelManager.getContainerWidget();
-		if (container == null || container.isHidden()) {
+		// The chatbox dialog layer is hidden until ChatboxPanelManager unhides it as the first step of
+		// opening an input, so a "container already visible" pre-check can never pass (issue #18: it
+		// always fell through to the chat-line fallback below). Only fall back when there is no
+		// container widget at all, or when the player isn't logged in to see a prompt.
+		if (chatboxPanelManager.getContainerWidget() == null || client.getGameState() != GameState.LOGGED_IN) {
 			sendBlockedChatMessage();
 			return;
 		}
