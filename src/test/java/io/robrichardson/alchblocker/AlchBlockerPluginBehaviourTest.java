@@ -17,24 +17,18 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.mockito.Mockito.withSettings;
 
-import io.robrichardson.alchblocker.config.BlockedItemAction;
 import io.robrichardson.alchblocker.config.DisplayType;
 import io.robrichardson.alchblocker.config.ListType;
 import io.robrichardson.alchblocker.config.UnlistedItemPolicy;
 import java.util.HashMap;
-import java.util.List;
 import java.util.Map;
-import net.runelite.api.ChatMessageType;
 import net.runelite.api.Client;
-import net.runelite.api.GameState;
 import net.runelite.api.ItemComposition;
 import net.runelite.api.KeyCode;
 import net.runelite.api.Menu;
 import net.runelite.api.MenuAction;
 import net.runelite.api.MenuEntry;
 import net.runelite.api.ScriptID;
-import net.runelite.api.events.GameStateChanged;
-import net.runelite.api.events.GameTick;
 import net.runelite.api.events.MenuOpened;
 import net.runelite.api.events.MenuOptionClicked;
 import net.runelite.api.events.PostMenuSort;
@@ -48,8 +42,6 @@ import net.runelite.client.config.ConfigManager;
 import net.runelite.client.events.ConfigChanged;
 import net.runelite.client.events.ProfileChanged;
 import net.runelite.client.game.ItemManager;
-import net.runelite.client.game.chatbox.ChatboxPanelManager;
-import net.runelite.client.game.chatbox.ChatboxTextMenuInput;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -75,11 +67,8 @@ public class AlchBlockerPluginBehaviourTest
 	@Mock private ConfigManager configManager;
 	@Mock private AlchBlockerConfig config;
 	@Mock private Menu menu;
-	@Mock private ChatboxPanelManager chatboxPanelManager;
 	@Mock private ItemManager itemManager;
 	@InjectMocks private AlchBlockerPlugin plugin;
-
-	private ChatboxTextMenuInput menuInput;
 
 	/** Simple stateful stand-in for an inventory slot widget. */
 	private static class Slot
@@ -114,7 +103,6 @@ public class AlchBlockerPluginBehaviourTest
 		when(config.unlistedItemPolicy()).thenReturn(UnlistedItemPolicy.ALLOW);
 		when(config.displayType()).thenReturn(DisplayType.TRANSPARENT);
 		when(config.contextMenuEnabled()).thenReturn(true);
-		when(config.blockedItemAction()).thenReturn(BlockedItemAction.BLOCK);
 		when(config.shiftClickAddsToList()).thenReturn(false);
 		lenient().when(client.isKeyPressed(KeyCode.KC_SHIFT)).thenReturn(false);
 		when(config.notedItemsOnly()).thenReturn(false);
@@ -130,18 +118,6 @@ public class AlchBlockerPluginBehaviourTest
 			return comp;
 		});
 		lenient().when(itemManager.getItemPrice(anyInt())).thenReturn(0);
-
-		lenient().when(client.getGameState()).thenReturn(GameState.LOGGED_IN);
-
-		menuInput = mock(ChatboxTextMenuInput.class, withSettings().defaultAnswer(Mockito.RETURNS_SELF));
-		lenient().when(chatboxPanelManager.openTextMenuInput(anyString())).thenReturn(menuInput);
-		lenient().when(chatboxPanelManager.getCurrentInput()).thenReturn(null);
-		// The chatbox dialog layer (MES_LAYER) is hidden during ordinary gameplay - it is only
-		// unhidden by ChatboxPanelManager itself when it opens an input (card #18). Reflect that
-		// reality here so the suite exercises the real client state, not an inverted one.
-		Widget chatboxContainer = mock(Widget.class);
-		when(chatboxContainer.isHidden()).thenReturn(true);
-		lenient().when(chatboxPanelManager.getContainerWidget()).thenReturn(chatboxContainer);
 
 		coins = new Slot(InterfaceID.Inventory.ITEMS, COINS, "Coins");
 		bones = new Slot(InterfaceID.Inventory.ITEMS, BONES, "Bones");
@@ -183,32 +159,6 @@ public class AlchBlockerPluginBehaviourTest
 		when(entry.getWidget()).thenReturn(slot.widget);
 		when(entry.getItemId()).thenReturn(itemId);
 		return entry;
-	}
-
-	private void tick(int n)
-	{
-		for (int i = 0; i < n; i++)
-		{
-			plugin.onGameTick(new GameTick());
-		}
-	}
-
-	/** Finds the Runnable registered via menuInput.option(text, callback) whose text contains the given substring. */
-	private Runnable optionCallback(String textContains)
-	{
-		ArgumentCaptor<String> textCaptor = ArgumentCaptor.forClass(String.class);
-		ArgumentCaptor<Runnable> callbackCaptor = ArgumentCaptor.forClass(Runnable.class);
-		verify(menuInput, Mockito.atLeastOnce()).option(textCaptor.capture(), callbackCaptor.capture());
-		List<String> texts = textCaptor.getAllValues();
-		List<Runnable> callbacks = callbackCaptor.getAllValues();
-		for (int i = 0; i < texts.size(); i++)
-		{
-			if (texts.get(i).toLowerCase().contains(textContains.toLowerCase()))
-			{
-				return callbacks.get(i);
-			}
-		}
-		throw new AssertionError("No option registered containing: " + textContains + ", options were: " + texts);
 	}
 
 	/** Mirrors the real client: entries[0] is Cancel, and the given entry is what a left-click performs. */
@@ -366,206 +316,6 @@ public class AlchBlockerPluginBehaviourTest
 		change.setGroup(AlchBlockerConfig.GROUP);
 		change.setKey(key);
 		return change;
-	}
-
-	/** Issue #18: BLOCK is the default and must never open a chatbox prompt. */
-	@Test
-	public void blockModeConsumesClickAndNeverOpensAPrompt()
-	{
-		selectSpell(highAlchSpell);
-		redrawInventory();
-
-		MenuOptionClicked click = alchClick(coins);
-		plugin.onMenuOptionClicked(click);
-
-		assertTrue(click.isConsumed());
-		verify(chatboxPanelManager, never()).openTextMenuInput(anyString());
-	}
-
-	/** Issue #18: CONFIRM still swallows the first click but opens a chatbox prompt naming the item. */
-	@Test
-	public void confirmModeConsumesTheFirstClickAndOpensThePrompt()
-	{
-		when(config.blockedItemAction()).thenReturn(BlockedItemAction.CONFIRM);
-		selectSpell(highAlchSpell);
-		redrawInventory();
-
-		MenuOptionClicked click = alchClick(coins);
-		plugin.onMenuOptionClicked(click);
-
-		assertTrue(click.isConsumed());
-		verify(chatboxPanelManager).openTextMenuInput(contains("Coins"));
-		optionCallback("cast this once");
-		optionCallback("don't cast");
-	}
-
-	/** Issue #18: confirming "cast this once" reveals the item and its very next click goes through. */
-	@Test
-	public void choosingCastOnceRevealsTheItemAndLetsTheNextClickThrough()
-	{
-		when(config.blockedItemAction()).thenReturn(BlockedItemAction.CONFIRM);
-		selectSpell(highAlchSpell);
-		redrawInventory();
-
-		plugin.onMenuOptionClicked(alchClick(coins));
-		optionCallback("cast this once").run();
-
-		assertEquals("item must be revealed once allowed", 0, coins.opacity);
-		assertFalse(coins.hidden);
-
-		MenuOptionClicked secondClick = alchClick(coins);
-		plugin.onMenuOptionClicked(secondClick);
-		assertFalse("the confirmed click must go through untouched", secondClick.isConsumed());
-	}
-
-	/** Issue #18: HIDDEN display type must also un-hide the item once allowed, not just un-dim it. */
-	@Test
-	public void choosingCastOnceRevealsAHiddenItemToo()
-	{
-		when(config.blockedItemAction()).thenReturn(BlockedItemAction.CONFIRM);
-		when(config.displayType()).thenReturn(DisplayType.HIDDEN);
-		selectSpell(highAlchSpell);
-		redrawInventory();
-		assertTrue(coins.hidden);
-
-		plugin.onMenuOptionClicked(alchClick(coins));
-		optionCallback("cast this once").run();
-
-		assertFalse(coins.hidden);
-	}
-
-	/** Issue #18: the allowance is single-use; the item is blocked again immediately after the cast. */
-	@Test
-	public void allowanceIsSingleUseAndTheItemIsBlockedAgainAfterTheCast()
-	{
-		when(config.blockedItemAction()).thenReturn(BlockedItemAction.CONFIRM);
-		selectSpell(highAlchSpell);
-		redrawInventory();
-
-		plugin.onMenuOptionClicked(alchClick(coins));
-		optionCallback("cast this once").run();
-		plugin.onMenuOptionClicked(alchClick(coins));   // the confirmed cast itself
-
-		redrawInventory();
-		assertEquals("item must be blocked again after the one-shot cast", 200, coins.opacity);
-
-		MenuOptionClicked thirdClick = alchClick(coins);
-		plugin.onMenuOptionClicked(thirdClick);
-		assertTrue("a further click must be blocked (and re-prompt)", thirdClick.isConsumed());
-	}
-
-	/** Issue #18: an unused allowance expires after 30 ticks so it can't be banked indefinitely. */
-	@Test
-	public void allowanceExpiresAfterThirtyTicksWithoutACast()
-	{
-		when(config.blockedItemAction()).thenReturn(BlockedItemAction.CONFIRM);
-		selectSpell(highAlchSpell);
-		redrawInventory();
-
-		plugin.onMenuOptionClicked(alchClick(coins));
-		optionCallback("cast this once").run();
-		assertEquals(0, coins.opacity);
-
-		tick(31);
-		redrawInventory();
-		assertEquals("allowance must have expired", 200, coins.opacity);
-
-		MenuOptionClicked click = alchClick(coins);
-		plugin.onMenuOptionClicked(click);
-		assertTrue(click.isConsumed());
-	}
-
-	/**
-	 * Issue #18: cancelling leaves the item blocked and writes nothing to config. Also guards the
-	 * ClientThread ordering trap: ChatboxTextMenuInput runs the chosen option's callback, THEN (via
-	 * an invokeLater close) onClose - so onClose must only clear the "prompt open" guard and must
-	 * never wipe an allowance the option callback just granted.
-	 */
-	@Test
-	public void choosingCancelLeavesTheItemBlockedAndOnCloseDoesNotClearAGrantedAllowance()
-	{
-		when(config.blockedItemAction()).thenReturn(BlockedItemAction.CONFIRM);
-		selectSpell(highAlchSpell);
-		redrawInventory();
-
-		plugin.onMenuOptionClicked(alchClick(coins));
-		optionCallback("don't cast").run();
-
-		verify(configManager, never()).setConfiguration(any(), any(), any());
-		redrawInventory();
-		assertEquals(200, coins.opacity);
-		MenuOptionClicked click = alchClick(coins);
-		plugin.onMenuOptionClicked(click);
-		assertTrue(click.isConsumed());
-
-		// Real order: the "cast once" callback runs first and grants the allowance, THEN onClose
-		// fires (deferred). onClose must not clear that allowance.
-		ArgumentCaptor<Runnable> onCloseCaptor = ArgumentCaptor.forClass(Runnable.class);
-		plugin.onMenuOptionClicked(alchClick(coins));
-		optionCallback("cast this once").run();
-		verify(menuInput, Mockito.atLeastOnce()).onClose(onCloseCaptor.capture());
-		onCloseCaptor.getValue().run();
-
-		assertEquals("allowance must survive onClose", 0, coins.opacity);
-		assertFalse(coins.hidden);
-	}
-
-	/**
-	 * Issue #18 / card #9 decision: option 3 applies the same move-between-lists action the context
-	 * menu would (card #9 spec section 5.3) - for a plain blacklist block, that moves the item to the
-	 * whitelist, worded "whitelist" to match.
-	 */
-	@Test
-	public void confirmOptionThreeWhitelistsAndIsWordedWhitelistInBlacklistMode()
-	{
-		when(config.blockedItemAction()).thenReturn(BlockedItemAction.CONFIRM);
-		when(config.blacklist()).thenReturn("coins");
-		plugin.onConfigChanged(configChanged("blacklist"));
-		selectSpell(highAlchSpell);
-		redrawInventory();
-
-		plugin.onMenuOptionClicked(alchClick(coins));
-		verify(chatboxPanelManager).openTextMenuInput(anyString());
-		optionCallback("whitelist").run();
-
-		verify(configManager).setConfiguration(eq(AlchBlockerConfig.GROUP), eq("whitelist"), contains("Coins"));
-	}
-
-	@Test
-	public void confirmOptionThreeWhitelistsAndIsWordedWhitelistInWhitelistModeToo()
-	{
-		when(config.blockedItemAction()).thenReturn(BlockedItemAction.CONFIRM);
-		when(config.blacklist()).thenReturn("");
-		when(config.whitelist()).thenReturn("bones");
-		when(config.unlistedItemPolicy()).thenReturn(UnlistedItemPolicy.BLOCK);
-		plugin.onConfigChanged(configChanged("whitelist"));
-		selectSpell(highAlchSpell);
-		redrawInventory();
-
-		plugin.onMenuOptionClicked(alchClick(coins));
-		optionCallback("whitelist").run();
-
-		verify(configManager).setConfiguration(eq(AlchBlockerConfig.GROUP), eq("whitelist"), contains("Coins"));
-	}
-
-	/**
-	 * The whitelist now ranks above helper rules, so "always allow" from the CONFIRM prompt no longer
-	 * needs a special "!" line - for an item blocked only by a helper rule, option 3 just writes a
-	 * plain whitelist line, the same as any other block.
-	 */
-	@Test
-	public void alwaysAllowFromConfirmWritesWhitelistLine()
-	{
-		when(config.blockedItemAction()).thenReturn(BlockedItemAction.CONFIRM);
-		when(config.notedItemsOnly()).thenReturn(true);
-		selectSpell(highAlchSpell);
-		redrawInventory();   // bones is blocked purely by the noted rule, not the list
-
-		plugin.onMenuOptionClicked(alchClick(bones));
-		verify(chatboxPanelManager).openTextMenuInput(anyString());
-		optionCallback("whitelist").run();
-
-		verify(configManager).setConfiguration(eq(AlchBlockerConfig.GROUP), eq("whitelist"), contains("Bones"));
 	}
 
 	/** Rob's ask: shift-click an inventory item to add its raw name to the item list. */
@@ -935,145 +685,6 @@ public class AlchBlockerPluginBehaviourTest
 		MenuOptionClicked click = alchClick(bones);
 		plugin.onMenuOptionClicked(click);
 		assertFalse(click.isConsumed());
-	}
-
-	/**
-	 * Review finding #4 (card #4): {@code shutDown} must reset the prompt-open guard and close any
-	 * open panel, or a plugin disable/re-enable (or profile switch) while the CONFIRM prompt is open
-	 * permanently disables CONFIRM until a client restart.
-	 */
-	@Test
-	public void shutDownResetsThePromptGuardAndClosesAnOpenPanel() throws Exception
-	{
-		when(config.blockedItemAction()).thenReturn(BlockedItemAction.CONFIRM);
-		selectSpell(highAlchSpell);
-		redrawInventory();
-
-		plugin.onMenuOptionClicked(alchClick(coins));
-		verify(chatboxPanelManager).openTextMenuInput(anyString());
-
-		plugin.shutDown();
-		verify(chatboxPanelManager).close();
-
-		plugin.startUp();
-		selectSpell(highAlchSpell);
-		redrawInventory();
-		plugin.onMenuOptionClicked(alchClick(coins));
-
-		verify(chatboxPanelManager, Mockito.times(2)).openTextMenuInput(anyString());
-	}
-
-	/**
-	 * Review finding #5 (card #4): {@code allowedItemId} is -1 when there is no live allowance, and
-	 * an empty inventory slot's item id is also -1, so without a sentinel guard every empty slot is
-	 * treated as "the confirmed item" and force-unhidden - clobbering whatever another plugin did
-	 * with that slot.
-	 */
-	@Test
-	public void emptyInventorySlotIsNotTreatedAsAnAllowedItemWhenNoAllowanceIsLive()
-	{
-		Slot emptySlot = new Slot(InterfaceID.Inventory.ITEMS, -1, "");
-		emptySlot.hidden = true; // simulate another plugin managing this slot
-		inventoryOf(coins, emptySlot);
-
-		selectSpell(highAlchSpell);
-		redrawInventory();
-
-		assertTrue("empty slot must not be force-unhidden by the -1/-1 sentinel match", emptySlot.hidden);
-	}
-
-	/**
-	 * Card #18 root cause: {@code getContainerWidget()} returns the chatbox dialog layer, which is
-	 * hidden during ordinary gameplay and only unhidden by {@code ChatboxPanelManager} itself when it
-	 * opens an input. A pre-check that requires it to already be visible can therefore never pass, so
-	 * the CONFIRM prompt never opens and every blocked click falls through to the chat-line fallback
-	 * instead. The guard must be dropped; only "another plugin already owns the panel" and "not logged
-	 * in" are legitimate reasons to fall back.
-	 */
-	@Test
-	public void confirmModePromptOpensEvenThoughTheChatboxDialogLayerIsHiddenBeforeMessageLayerOpen()
-	{
-		when(config.blockedItemAction()).thenReturn(BlockedItemAction.CONFIRM);
-		selectSpell(highAlchSpell);
-		redrawInventory();
-
-		MenuOptionClicked click = alchClick(coins);
-		plugin.onMenuOptionClicked(click);
-
-		assertTrue("the click must be consumed so the game doesn't also alch the item", click.isConsumed());
-		verify(chatboxPanelManager).openTextMenuInput(contains("Coins"));
-		verify(client, never()).addChatMessage(eq(ChatMessageType.GAMEMESSAGE), anyString(), contains("Alch Blocker blocked"), any());
-	}
-
-	/**
-	 * Review finding #6 (card #4): card #2's spec calls the fallback chat message "rate-limited to
-	 * once per allowance window". Alching is a spam-click activity, so without rate limiting every
-	 * blocked click spams "Alch Blocker blocked that item." while the chatbox is unavailable.
-	 *
-	 * Card #18: a hidden container no longer forces the fallback (that's the normal, pre-prompt
-	 * state), so this drives the fallback the two ways that remain legitimate: no container widget at
-	 * all, and not being logged in.
-	 */
-	@Test
-	public void fallbackChatMessageIsRateLimitedWhenTheChatboxIsUnavailable()
-	{
-		when(config.blockedItemAction()).thenReturn(BlockedItemAction.CONFIRM);
-		when(chatboxPanelManager.getContainerWidget()).thenReturn(null);
-		selectSpell(highAlchSpell);
-		redrawInventory();
-
-		plugin.onMenuOptionClicked(alchClick(coins));
-		plugin.onMenuOptionClicked(alchClick(coins));
-		plugin.onMenuOptionClicked(alchClick(coins));
-
-		verify(client, Mockito.times(1))
-			.addChatMessage(eq(ChatMessageType.GAMEMESSAGE), anyString(), anyString(), any());
-	}
-
-	/**
-	 * Card #18: the other legitimate fallback trigger - the player isn't logged in (e.g. a stray
-	 * event during the login transition).
-	 */
-	@Test
-	public void fallbackChatMessageIsUsedWhenNotLoggedIn()
-	{
-		when(config.blockedItemAction()).thenReturn(BlockedItemAction.CONFIRM);
-		when(client.getGameState()).thenReturn(GameState.LOGIN_SCREEN);
-		selectSpell(highAlchSpell);
-		redrawInventory();
-
-		MenuOptionClicked click = alchClick(coins);
-		plugin.onMenuOptionClicked(click);
-
-		verify(chatboxPanelManager, never()).openTextMenuInput(anyString());
-		verify(client).addChatMessage(eq(ChatMessageType.GAMEMESSAGE), anyString(), contains("Alch Blocker blocked"), any());
-	}
-
-	/**
-	 * Recommended cleanup (card #4): a live allowance and the prompt-open guard must not survive a
-	 * logout or world hop, since {@code GameTick} does not fire on the login screen.
-	 */
-	@Test
-	public void gameStateChangeToLoginScreenClearsTheAllowanceAndPromptGuard()
-	{
-		when(config.blockedItemAction()).thenReturn(BlockedItemAction.CONFIRM);
-		selectSpell(highAlchSpell);
-		redrawInventory();
-
-		plugin.onMenuOptionClicked(alchClick(coins));
-		optionCallback("cast this once").run();
-		assertEquals("allowance granted", 0, coins.opacity);
-
-		GameStateChanged event = new GameStateChanged();
-		event.setGameState(GameState.LOGIN_SCREEN);
-		plugin.onGameStateChanged(event);
-
-		redrawInventory();
-		assertEquals("allowance must be cleared on logout", 200, coins.opacity);
-
-		// The prompt guard must also be clear, so CONFIRM works again after logging back in.
-		plugin.onMenuOptionClicked(alchClick(coins));
-		verify(chatboxPanelManager, Mockito.times(2)).openTextMenuInput(anyString());
 	}
 
 	// --- Card #8: helper rules (untradeables, value thresholds, rune cost, MTA exemption) ---
@@ -1472,29 +1083,6 @@ public class AlchBlockerPluginBehaviourTest
 			argThat(written -> !written.toLowerCase().contains("coins")));
 		verify(configManager).setConfiguration(eq(AlchBlockerConfig.GROUP), eq("whitelist"), contains("Coins"));
 	}
-
-	/**
-	 * Recommended finding #5 (card #12 review): a live CONFIRM allowance must not survive a profile
-	 * switch - {@code GameTick} keeps firing under the new profile, so an unguarded allowance would
-	 * grant up to 30 ticks of a free cast under rules the user never confirmed for that item.
-	 */
-	@Test
-	public void profileChangeClearsALiveAllowance()
-	{
-		when(config.blockedItemAction()).thenReturn(BlockedItemAction.CONFIRM);
-		selectSpell(highAlchSpell);
-		redrawInventory();
-
-		plugin.onMenuOptionClicked(alchClick(coins));
-		optionCallback("cast this once").run();
-		assertEquals("allowance granted", 0, coins.opacity);
-
-		plugin.onProfileChanged(new ProfileChanged());
-
-		redrawInventory();
-		assertEquals("allowance must not survive a profile switch", 200, coins.opacity);
-	}
-
 	/** Phase 1 (card #9 spec section 6.2): the legacy keys must survive migration, for a safe rollback. */
 	@Test
 	public void legacyKeysSurvivePhaseOneMigration() throws Exception {

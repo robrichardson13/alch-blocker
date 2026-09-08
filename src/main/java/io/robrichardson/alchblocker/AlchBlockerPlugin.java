@@ -14,20 +14,16 @@ import javax.inject.Inject;
 
 import com.google.inject.Provides;
 
-import io.robrichardson.alchblocker.config.BlockedItemAction;
 import io.robrichardson.alchblocker.config.DisplayType;
 import io.robrichardson.alchblocker.config.ListType;
 import io.robrichardson.alchblocker.config.UnlistedItemPolicy;
 import lombok.extern.slf4j.Slf4j;
-import net.runelite.api.ChatMessageType;
 import net.runelite.api.Client;
-import net.runelite.api.GameState;
 import net.runelite.api.ItemComposition;
 import net.runelite.api.KeyCode;
 import net.runelite.api.MenuAction;
 import net.runelite.api.MenuEntry;
 import net.runelite.api.ScriptID;
-import net.runelite.api.events.GameStateChanged;
 import net.runelite.api.events.GameTick;
 import net.runelite.api.events.MenuOpened;
 import net.runelite.api.events.MenuOptionClicked;
@@ -45,8 +41,6 @@ import net.runelite.client.eventbus.Subscribe;
 import net.runelite.client.events.ConfigChanged;
 import net.runelite.client.events.ProfileChanged;
 import net.runelite.client.game.ItemManager;
-import net.runelite.client.game.chatbox.ChatboxPanelManager;
-import net.runelite.client.game.chatbox.ChatboxTextMenuInput;
 import net.runelite.client.plugins.Plugin;
 import net.runelite.client.plugins.PluginDescriptor;
 import net.runelite.client.util.Text;
@@ -69,9 +63,6 @@ public class AlchBlockerPlugin extends Plugin
 
 	@Inject
 	private AlchBlockerConfig config;
-
-	@Inject
-	private ChatboxPanelManager chatboxPanelManager;
 
 	@Inject
 	private ItemManager itemManager;
@@ -113,17 +104,6 @@ public class AlchBlockerPlugin extends Plugin
 		ItemID.MAGICTRAINING_EMERALD,
 		ItemID.MAGICTRAINING_RUNE_LONGSWORD
 	));
-
-	/** How long a "cast this once" confirmation stays usable before it expires unused (issue #18). */
-	private static final int ALLOWANCE_TICKS = 30;
-
-	/** Item id the user just confirmed via the CONFIRM prompt; -1 when there is no live allowance. */
-	private int allowedItemId = -1;
-	private int allowanceTicksRemaining = 0;
-	/** True between opening our chatbox prompt and its onClose, so a spam-click can't reopen it. */
-	private boolean promptOpen = false;
-	/** Ticks left before the rate-limited fallback chat message may fire again. */
-	private int blockedMessageCooldownTicks = 0;
 
 	private static final int CONFIG_VERSION = 2;
 	private static final String DEFAULT_LEGACY_LIST = "*Rune Pouch\n*(1)\n*(2)\n*(3)\n*(4)\n";
@@ -195,14 +175,6 @@ public class AlchBlockerPlugin extends Plugin
 
 	@Override
 	protected void shutDown() throws Exception {
-		// The plugin instance is reused across disable/re-enable (and profile switches), so a
-		// stale "prompt open" guard or an orphaned open panel must not survive a shutDown - or
-		// CONFIRM silently and permanently degrades to BLOCK on re-enable.
-		if (promptOpen) {
-			chatboxPanelManager.close();
-		}
-		promptOpen = false;
-		clearAllowance();
 		clientThread.invoke(this::showBlockedItems);
 	}
 
@@ -218,7 +190,6 @@ public class AlchBlockerPlugin extends Plugin
 		parseItemLists();
 		blacklistVerdictCache.clear();
 		whitelistVerdictCache.clear();
-		clearAllowance();
 		// Restore everything first so a display type change mid-alch doesn't leave items
 		// stuck with the old display type's opacity/hidden state (issue #17), then re-apply.
 		clientThread.invokeAtTickEnd(() -> {
@@ -236,8 +207,6 @@ public class AlchBlockerPlugin extends Plugin
 	public void onProfileChanged(ProfileChanged event) {
 		migrate();
 		parseItemLists();
-		// A live allowance must not survive into the new profile's rules (recommended finding #5).
-		clearAllowance();
 		clientThread.invokeAtTickEnd(this::refreshItemVisibility);
 	}
 
@@ -248,15 +217,8 @@ public class AlchBlockerPlugin extends Plugin
 		if (isAlchOnItemEntry(entry)) {
 			int itemId = getEntryItemId(entry);
 
-			if (itemId == allowedItemId) {
-				// The user's own click on the item they just confirmed. Let it through untouched
-				// (never synthesise or replay a click) and burn the one-shot allowance.
-				clearAllowance();
-			} else if (hiddenItems.contains(itemId)) {
+			if (hiddenItems.contains(itemId)) {
 				event.consume();
-				if (config.blockedItemAction() == BlockedItemAction.CONFIRM) {
-					promptForBlockedItem(entry, itemId);
-				}
 			}
 		}
 		// Check spell state after any click (handles clicking blank spot to cancel)
@@ -271,100 +233,10 @@ public class AlchBlockerPlugin extends Plugin
 		}
 	}
 
-	@Subscribe
-	public void onGameTick(GameTick event) {
-		if (blockedMessageCooldownTicks > 0) {
-			blockedMessageCooldownTicks--;
-		}
-		if (allowedItemId != -1 && --allowanceTicksRemaining <= 0) {
-			clearAllowance();
-			clientThread.invokeAtTickEnd(this::refreshItemVisibility);
-		}
-	}
-
-	/**
-	 * Recommended cleanup (card #4): {@code GameTick} does not fire on the login screen, so a live
-	 * allowance or an open-prompt guard would otherwise survive a logout/world hop until the next
-	 * login's ticks catch up.
-	 */
-	@Subscribe
-	public void onGameStateChanged(GameStateChanged event) {
-		if (event.getGameState() == GameState.LOGIN_SCREEN || event.getGameState() == GameState.HOPPING) {
-			clearAllowance();
-			promptOpen = false;
-		}
-	}
-
-	/**
-	 * Opens a chatbox confirmation for a blocked item (issue #18). Never synthesises input: this
-	 * only decides whether the user's own *next* click on the item will be let through.
-	 */
-	private void promptForBlockedItem(MenuEntry entry, int itemId) {
-		if (promptOpen || chatboxPanelManager.getCurrentInput() != null) {
-			// Our prompt is already open, or another plugin owns the chatbox: stay silent rather
-			// than fighting for the panel.
-			return;
-		}
-
-		// The chatbox dialog layer is hidden until ChatboxPanelManager unhides it as the first step of
-		// opening an input, so a "container already visible" pre-check can never pass (issue #18: it
-		// always fell through to the chat-line fallback below). Only fall back when there is no
-		// container widget at all, or when the player isn't logged in to see a prompt.
-		if (chatboxPanelManager.getContainerWidget() == null || client.getGameState() != GameState.LOGGED_IN) {
-			sendBlockedChatMessage();
-			return;
-		}
-
-		Widget w = entry.getWidget();
-		final String name = w != null && w.getName() != null
-			? Text.removeTags(w.getName()).replace(' ', ' ').trim()
-			: "this item";
-		final boolean ringPowered = w != null && w.getId() == EXPLORERS_RING_INVENTORY_WIDGET_ID;
-		promptOpen = true;
-
-		ChatboxTextMenuInput input = chatboxPanelManager
-			.openTextMenuInput("Alch Blocker: cast " + name + "?")
-			.option("1. No, don't cast", () -> { })
-			.option("2. Yes, cast this once", () -> grantAllowance(itemId))
-			.option("3. Yes, and whitelist " + name, () -> {
-				applyPrimaryListAction(itemId, name, ringPowered);
-				grantAllowance(itemId);
-			});
-
-		// Ordering trap: ChatboxTextMenuInput.callback() calls chatboxPanelManager.close() (which is
-		// invokeLater, so deferred) and only then runs the chosen option's callback inline. That
-		// means onClose fires AFTER the option callback, not before. onClose must therefore only
-		// reset the "prompt is open" guard - never touch the allowance the option callback may have
-		// just granted, or it would be wiped immediately after being handed out.
-		input.onClose(() -> promptOpen = false).build();
-	}
-
-	private void grantAllowance(int itemId) {
-		allowedItemId = itemId;
-		allowanceTicksRemaining = ALLOWANCE_TICKS;
-		clientThread.invoke(this::refreshItemVisibility);
-	}
-
-	private void clearAllowance() {
-		allowedItemId = -1;
-		allowanceTicksRemaining = 0;
-	}
-
 	/** Full restore-then-reapply, same pattern as onConfigChanged uses for issue #17. */
 	private void refreshItemVisibility() {
 		showBlockedItems();
 		updateItemVisibility();
-	}
-
-	private void sendBlockedChatMessage() {
-		// Rate-limited to once per allowance window (card #2 spec): alching is a spam-click
-		// activity, so without this every blocked click while the chatbox is unavailable spams
-		// the same message.
-		if (blockedMessageCooldownTicks > 0) {
-			return;
-		}
-		client.addChatMessage(ChatMessageType.GAMEMESSAGE, "", "Alch Blocker blocked that item.", null);
-		blockedMessageCooldownTicks = ALLOWANCE_TICKS;
 	}
 
 	private void updateItemVisibility() {
@@ -433,7 +305,6 @@ public class AlchBlockerPlugin extends Plugin
 	@Subscribe
 	public void onWidgetClosed(WidgetClosed event) {
 		if (event.getGroupId() == EXPLORERS_RING_GROUP_ID) {
-			clearAllowance();
 			showBlockedItems();
 		}
 	}
@@ -508,10 +379,10 @@ public class AlchBlockerPlugin extends Plugin
 	}
 
 	/**
-	 * Applies the action described by {@link #primaryListActionLabel}. Used by the context menu entry,
-	 * shift-click, and the CONFIRM prompt's "whitelist" option (card #9 spec section 5). The
-	 * whitelist now ranks above helper rules, so whitelisting an item is always sufficient to allow
-	 * it, whether it was blocked by the list or only by a helper rule.
+	 * Applies the action described by {@link #primaryListActionLabel}. Used by the context menu entry
+	 * and shift-click (card #9 spec section 5). The whitelist now ranks above helper rules, so
+	 * whitelisting an item is always sufficient to allow it, whether it was blocked by the list or
+	 * only by a helper rule.
 	 */
 	private void applyPrimaryListAction(int itemId, String plainName, boolean ringPowered) {
 		String lower = plainName.toLowerCase();
@@ -591,11 +462,6 @@ public class AlchBlockerPlugin extends Plugin
 			final Widget w = entry.getWidget();
 			final int itemId = w.getItemId();
 
-			// A live CONFIRM allowance already lets this item through; don't offer to edit the list.
-			if (itemId == allowedItemId) {
-				return;
-			}
-
 			final String itemName = w.getName();
 			final String plainItemName = Text.removeTags(itemName).replace('\u00A0', ' ').trim();
 			final boolean ringPowered = w.getId() == EXPLORERS_RING_INVENTORY_WIDGET_ID;
@@ -639,24 +505,11 @@ public class AlchBlockerPlugin extends Plugin
 				continue;
 			}
 
-			// allowedItemId is -1 when there is no live allowance, and an empty slot's item id is
-			// also -1 - guard the sentinel so an empty slot is never treated as "the confirmed item"
-			// (review finding #5).
-			if (allowedItemId != -1 && itemId == allowedItemId) {
-				// Confirmed via the CONFIRM prompt: must look and behave like a normal item so the
-				// user's next click actually reaches it.
-				inventoryItem.setOpacity(0);
-				inventoryItem.setHidden(false);
-				hiddenItems.remove(itemId);
-				continue;
-			}
-
 			String itemName = normalize(inventoryItem.getName());
 			boolean shouldBlock;
 
-			// Precedence, first match wins: confirm allowance (handled above) -> whitelist -> helper
-			// rules (MTA exempt) -> blacklist -> unlisted policy. The whitelist always wins, including
-			// over a helper rule.
+			// Precedence, first match wins: whitelist -> helper rules (MTA exempt) -> blacklist ->
+			// unlisted policy. The whitelist always wins, including over a helper rule.
 			if (matchesWhitelist(itemId, itemName)) {
 				shouldBlock = false;
 			} else if (helperRulesActive && !HELPER_RULE_EXEMPT_ITEMS.contains(itemId) && isBlockedByHelperRules(itemId, ctx)) {

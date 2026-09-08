@@ -1,6 +1,5 @@
 package io.robrichardson.alchblocker;
 
-import io.robrichardson.alchblocker.config.BlockedItemAction;
 import io.robrichardson.alchblocker.config.DisplayType;
 import io.robrichardson.alchblocker.config.UnlistedItemPolicy;
 import net.runelite.client.config.Config;
@@ -47,21 +46,10 @@ public interface AlchBlockerConfig extends Config
 		return UnlistedItemPolicy.ALLOW;
 	}
 
-	@ConfigItem(
-		keyName = "blockedItemAction",
-		name = "When a blocked item is clicked",
-		description = "Block: the click is silently ignored (default). Confirm: a chatbox prompt asks whether to cast anyway; if you confirm, your next click on that item goes through once.",
-		position = 3
-	)
-	default BlockedItemAction blockedItemAction()
-	{
-		return BlockedItemAction.BLOCK;
-	}
-
 	@ConfigSection(
 		name = "Item lists",
 		description = "One item per line; * is a wildcard. The whitelist beats everything else, including helper rules.",
-		position = 4
+		position = 3
 	)
 	String itemLists = "itemLists";
 
@@ -70,7 +58,7 @@ public interface AlchBlockerConfig extends Config
 		name = "Blacklist",
 		description = "Items here cannot be alched. One per line, * wildcards allowed. The whitelist overrides this.",
 		section = "itemLists",
-		position = 5
+		position = 4
 	)
 	default String blacklist()
 	{
@@ -82,7 +70,7 @@ public interface AlchBlockerConfig extends Config
 		name = "Whitelist",
 		description = "Items here can always be alched, overriding the blacklist and every helper rule. One per line, * wildcards allowed.",
 		section = "itemLists",
-		position = 6
+		position = 5
 	)
 	default String whitelist()
 	{
@@ -92,7 +80,7 @@ public interface AlchBlockerConfig extends Config
 	@ConfigSection(
 		name = "Helper rules",
 		description = "Block whole kinds of item without listing them by name. These apply on top of your list above - the only thing that overrides them is whitelisting the item. Mage Training Arena items are always exempt. All off by default.",
-		position = 7,
+		position = 6,
 		closedByDefault = true
 	)
 	String helperRules = "helperRules";
@@ -102,7 +90,7 @@ public interface AlchBlockerConfig extends Config
 		name = "Only allow noted items",
 		description = "Blocks every un-noted item. Whitelist an item to allow it anyway.",
 		section = "helperRules",
-		position = 8
+		position = 7
 	)
 	default boolean notedItemsOnly()
 	{
@@ -114,7 +102,7 @@ public interface AlchBlockerConfig extends Config
 		name = "Block untradeable items",
 		description = "Blocks items that cannot be traded or sold, since they usually cannot be replaced. Noted items are treated as tradeable if the unnoted item is.",
 		section = "helperRules",
-		position = 9
+		position = 8
 	)
 	default boolean blockUntradeable()
 	{
@@ -127,7 +115,7 @@ public interface AlchBlockerConfig extends Config
 		name = "Minimum alch value",
 		description = "Blocks items whose alch value is below this many coins. 0 turns the rule off.",
 		section = "helperRules",
-		position = 10
+		position = 9
 	)
 	default int minAlchValue()
 	{
@@ -139,7 +127,7 @@ public interface AlchBlockerConfig extends Config
 		name = "Block items worth more on the GE",
 		description = "Blocks items whose alch value is less than what they sell for on the Grand Exchange after tax. Uses the two settings below.",
 		section = "helperRules",
-		position = 11
+		position = 10
 	)
 	default boolean blockAlchLoss()
 	{
@@ -152,7 +140,7 @@ public interface AlchBlockerConfig extends Config
 		name = "Required profit",
 		description = "Only used when 'Block items worth more on the GE' is on. The alch must beat the GE price by at least this many coins. Negative values tolerate a loss of that size.",
 		section = "helperRules",
-		position = 12
+		position = 11
 	)
 	default int alchProfitMargin()
 	{
@@ -164,7 +152,7 @@ public interface AlchBlockerConfig extends Config
 		name = "Count rune cost",
 		description = "Only used when 'Block items worth more on the GE' is on. Adds the price of 1 nature and 5 fire runes to the threshold. Turn this off if you alch with a fire staff. Explorer's ring casts never count rune cost.",
 		section = "helperRules",
-		position = 13
+		position = 12
 	)
 	default boolean includeRuneCost()
 	{
@@ -175,7 +163,7 @@ public interface AlchBlockerConfig extends Config
 		keyName = "shiftClickAddsToList",
 		name = "Shift-click adds to item list",
 		description = "Hold shift and right-click an inventory item to show Blacklist/Whitelist Alchemy at the bottom of the menu (shift+right-click again to reverse it). Off by default: conflicts with Menu Entry Swapper's shift-click drop.",
-		position = 14
+		position = 13
 	)
 	default boolean shiftClickAddsToList()
 	{
