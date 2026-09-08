@@ -169,4 +169,15 @@ public interface AlchBlockerConfig extends Config
 	{
 		return false;
 	}
+
+	@ConfigItem(
+		keyName = "shiftClickAlchesBlocked",
+		name = "Shift-click alches blocked items",
+		description = "Hold Shift while clicking a blocked item to alch it anyway. The item stays dimmed/hidden.",
+		position = 14
+	)
+	default boolean shiftClickAlchesBlocked()
+	{
+		return false;
+	}
 }

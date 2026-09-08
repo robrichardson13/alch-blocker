@@ -104,6 +104,7 @@ public class AlchBlockerPluginBehaviourTest
 		when(config.displayType()).thenReturn(DisplayType.TRANSPARENT);
 		when(config.contextMenuEnabled()).thenReturn(true);
 		when(config.shiftClickAddsToList()).thenReturn(false);
+		when(config.shiftClickAlchesBlocked()).thenReturn(false);
 		lenient().when(client.isKeyPressed(KeyCode.KC_SHIFT)).thenReturn(false);
 		when(config.notedItemsOnly()).thenReturn(false);
 		// Default every item id to "un-noted, tradeable, cheap" unless a test says otherwise. Helper
@@ -269,6 +270,93 @@ public class AlchBlockerPluginBehaviourTest
 		MenuOptionClicked allowed = new MenuOptionClicked(alchEntry(bones, "Cast", "<col=00ff00>High Level Alchemy</col> -> <col=ff9040>Bones</col>"));
 		plugin.onMenuOptionClicked(allowed);
 		assertFalse(allowed.isConsumed());
+	}
+
+	// --- Card #21/#23: opt-in shift-click to alch a blocked item anyway ---
+
+	/** Shift-click, with the override on, must alch a blocked item instead of being blocked. */
+	@Test
+	public void shiftHeldOnBlockedItemDoesNotConsumeTheAlchClick()
+	{
+		when(config.shiftClickAlchesBlocked()).thenReturn(true);
+		when(client.isKeyPressed(KeyCode.KC_SHIFT)).thenReturn(true);
+		selectSpell(highAlchSpell);
+		redrawInventory();
+
+		MenuOptionClicked click = alchClick(coins);
+		plugin.onMenuOptionClicked(click);
+		assertFalse("shift-click must not be consumed when the override is on", click.isConsumed());
+	}
+
+	/** With the toggle off (the default), shift held must make no difference at all. */
+	@Test
+	public void shiftHeldIsIgnoredWhenTheOverrideIsOff()
+	{
+		when(config.shiftClickAlchesBlocked()).thenReturn(false);
+		when(client.isKeyPressed(KeyCode.KC_SHIFT)).thenReturn(true);
+		selectSpell(highAlchSpell);
+		redrawInventory();
+
+		MenuOptionClicked click = alchClick(coins);
+		plugin.onMenuOptionClicked(click);
+		assertTrue("shift must be inert while the override is off", click.isConsumed());
+	}
+
+	/** With the override on but shift not held, the item must still be blocked as normal. */
+	@Test
+	public void unshiftedClickIsStillBlockedWhenTheOverrideIsOn()
+	{
+		when(config.shiftClickAlchesBlocked()).thenReturn(true);
+		when(client.isKeyPressed(KeyCode.KC_SHIFT)).thenReturn(false);
+		selectSpell(highAlchSpell);
+		redrawInventory();
+
+		MenuOptionClicked click = alchClick(coins);
+		plugin.onMenuOptionClicked(click);
+		assertTrue("a plain click must still be blocked", click.isConsumed());
+	}
+
+	/**
+	 * Card #21 spec: while a spell is selected, shift+click is reserved for the alch-anyway override,
+	 * not list editing - otherwise shiftClickAddsToList would hijack the click that should alch.
+	 */
+	@Test
+	public void shiftClickListEditingIsSuppressedWhileASpellIsSelected()
+	{
+		when(config.shiftClickAddsToList()).thenReturn(true);
+		when(client.isKeyPressed(KeyCode.KC_SHIFT)).thenReturn(true);
+		when(client.isWidgetSelected()).thenReturn(true);
+
+		postMenuSort(itemMenuEntry(bones.widget));
+
+		verify(menu, never()).createMenuEntry(anyInt());
+	}
+
+	/**
+	 * The Explorer's Ring has no target-mode selection, so the same collision shows up there as a
+	 * blocked item rather than a selected widget: shift+click on a currently-blocked ring item must
+	 * alch it, not open the list-editing menu entry.
+	 */
+	@Test
+	public void shiftClickListEditingIsSuppressedInTheRingContainerForABlockedItem()
+	{
+		when(config.shiftClickAddsToList()).thenReturn(true);
+		when(client.isKeyPressed(KeyCode.KC_SHIFT)).thenReturn(true);
+
+		Widget ringInventory = mock(Widget.class);
+		when(ringInventory.getId()).thenReturn(InterfaceID.LumbridgeAlchemy.ITEMS);
+		when(ringInventory.getChildren()).thenReturn(new Widget[]{coins.widget});
+		when(client.getWidget(InterfaceID.LumbridgeAlchemy.ITEMS)).thenReturn(ringInventory);
+		redrawInventory();   // coins is blacklisted, so this hides it in the ring container
+
+		Widget ringSlot = mock(Widget.class);
+		when(ringSlot.getId()).thenReturn(InterfaceID.LumbridgeAlchemy.ITEMS);
+		when(ringSlot.getItemId()).thenReturn(COINS);
+		when(ringSlot.getName()).thenReturn("Coins");
+
+		postMenuSort(itemMenuEntry(ringSlot));
+
+		verify(menu, never()).createMenuEntry(anyInt());
 	}
 
 	/** Issues #45/#46: the context menu entry must still be added when another plugin rewrites the text or NBSPs are used. */

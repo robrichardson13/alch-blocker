@@ -218,7 +218,13 @@ public class AlchBlockerPlugin extends Plugin
 			int itemId = getEntryItemId(entry);
 
 			if (hiddenItems.contains(itemId)) {
-				event.consume();
+				// Opt-in escape hatch (card #21/#23): Shift-clicking a blocked item alches it anyway.
+				// The item itself is left exactly as it was - still dimmed/hidden - this only declines
+				// to consume the user's own real click, never synthesises one.
+				boolean shiftOverride = config.shiftClickAlchesBlocked() && client.isKeyPressed(KeyCode.KC_SHIFT);
+				if (!shiftOverride) {
+					event.consume();
+				}
 			}
 		}
 		// Check spell state after any click (handles clicking blank spot to cancel)
@@ -326,6 +332,13 @@ public class AlchBlockerPlugin extends Plugin
 			return;
 		}
 
+		// Card #21/#23: while a spell is selected, shift+click is reserved for the alch-anyway
+		// override above, not list editing - a spell being selected means the last menu entry is the
+		// alch attempt itself, not something to blacklist/whitelist.
+		if (client.isWidgetSelected()) {
+			return;
+		}
+
 		// The menu is not rebuilt while it is open, so PostMenuSort keeps firing on an already-open
 		// menu without a fresh entry array - swapping/appending here would duplicate the entry on
 		// every fire (both MenuEntrySwapperPlugin and OverlayRenderer guard on this for the same
@@ -349,9 +362,16 @@ public class AlchBlockerPlugin extends Plugin
 			return;
 		}
 
+		final boolean ringPowered = container == EXPLORERS_RING_INVENTORY_WIDGET_ID;
+
+		// Card #21/#23: the Explorer's Ring has no target-mode selection, so a blocked ring item's
+		// only shift+click meaning is the alch-anyway override above - it must win over list editing.
+		if (ringPowered && hiddenItems.contains(w.getItemId())) {
+			return;
+		}
+
 		final String itemName = w.getName();
 		final String plainName = Text.removeTags(itemName).replace('\u00A0', ' ').trim();
-		final boolean ringPowered = container == EXPLORERS_RING_INVENTORY_WIDGET_ID;
 
 		// entries[0] is Cancel (MenuAction.CANCEL) whenever the game shows one - the client puts it in
 		// the array rather than rendering it separately - so inserting at index 1 lands directly above

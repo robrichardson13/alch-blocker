@@ -28,6 +28,10 @@ the menu (a shift+right-click config option, off by default).
 If you're upgrading from an older version, your existing item list and list type are converted
 automatically the first time the new version runs - nothing to do on your end.
 
+Blocked a bit too eagerly? An optional "Shift-click alches blocked items" setting (off by default)
+lets you hold Shift while clicking a blocked item to alch it anyway - the item stays
+dimmed/hidden, this is just a one-off override for that click.
+
 ## Helper rules
 
 Besides the blacklist/whitelist, an optional "Helper rules" section (collapsed and off by default)
