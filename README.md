@@ -13,6 +13,39 @@ Allows you to block items from being alched
 
 ![Demo](https://i.imgur.com/1kXUiCm.gif)
 
+## Blacklist and whitelist
+
+A blacklist and a whitelist are both always active - the whitelist beats the blacklist, so it's
+the natural place to carve out exceptions. An "Unlisted items" setting decides what happens to an
+item that's on neither list: Allow (only the blacklist blocks) or Block (only the whitelist can
+alch). Right-click an inventory item while an alchemy spell is selected for a single context menu
+option that always does the one useful thing for that item's current state -
+"Blacklist Alchemy"/"Whitelist Alchemy" moves it to the right list (including for an item blocked
+only by a helper rule, since whitelisting it is enough to allow it), and "Remove from whitelist"
+takes it off again - or hold shift and right-click it to show that same option at the bottom of
+the menu (a shift+right-click config option, off by default).
+
+If you're upgrading from an older version, your existing item list and list type are converted
+automatically the first time the new version runs - nothing to do on your end.
+
+Blocked a bit too eagerly? An optional "Shift-click alches blocked items" setting (off by default)
+lets you hold Shift while clicking a blocked item to alch it anyway - the item stays
+dimmed/hidden, this is just a one-off override for that click.
+
+## Helper rules
+
+Besides the blacklist/whitelist, an optional "Helper rules" section (collapsed and off by default)
+can block whole kinds of item without listing them by name, on top of both lists:
+
+- **Only allow noted items**
+- **Block untradeable items**
+- **Minimum alch value**
+- **Block items worth more on the GE** (with a configurable required profit and whether to count
+  rune cost)
+
+Whitelisting an item always allows it, overriding the blacklist and every helper rule. Mage
+Training Arena reward items are always exempt from helper rules so the minigame keeps working.
+
 ## Issues/Suggestions
 
 Found a bug? Have a suggestion?

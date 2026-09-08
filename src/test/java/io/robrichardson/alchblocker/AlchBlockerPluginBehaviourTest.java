@@ -5,6 +5,10 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.argThat;
+import static org.mockito.ArgumentMatchers.contains;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.mock;
@@ -15,22 +19,34 @@ import static org.mockito.Mockito.withSettings;
 
 import io.robrichardson.alchblocker.config.DisplayType;
 import io.robrichardson.alchblocker.config.ListType;
+import io.robrichardson.alchblocker.config.UnlistedItemPolicy;
+import java.util.HashMap;
+import java.util.Map;
 import net.runelite.api.Client;
+import net.runelite.api.ItemComposition;
+import net.runelite.api.KeyCode;
 import net.runelite.api.Menu;
 import net.runelite.api.MenuAction;
 import net.runelite.api.MenuEntry;
 import net.runelite.api.ScriptID;
 import net.runelite.api.events.MenuOpened;
 import net.runelite.api.events.MenuOptionClicked;
+import net.runelite.api.events.PostMenuSort;
 import net.runelite.api.events.ScriptPostFired;
 import net.runelite.api.gameval.InterfaceID;
+import net.runelite.api.gameval.ItemID;
+import net.runelite.api.gameval.VarbitID;
 import net.runelite.api.widgets.Widget;
 import net.runelite.client.callback.ClientThread;
 import net.runelite.client.config.ConfigManager;
 import net.runelite.client.events.ConfigChanged;
+import net.runelite.client.events.ProfileChanged;
+import net.runelite.client.game.ItemManager;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
+import org.mockito.ArgumentCaptor;
+import org.mockito.ArgumentMatchers;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.Mockito;
@@ -51,6 +67,7 @@ public class AlchBlockerPluginBehaviourTest
 	@Mock private ConfigManager configManager;
 	@Mock private AlchBlockerConfig config;
 	@Mock private Menu menu;
+	@Mock private ItemManager itemManager;
 	@InjectMocks private AlchBlockerPlugin plugin;
 
 	/** Simple stateful stand-in for an inventory slot widget. */
@@ -81,10 +98,27 @@ public class AlchBlockerPluginBehaviourTest
 		doAnswer(inv -> { ((Runnable) inv.getArgument(0)).run(); return null; }).when(clientThread).invokeAtTickEnd(any(Runnable.class));
 		doAnswer(inv -> { ((Runnable) inv.getArgument(0)).run(); return null; }).when(clientThread).invoke(any(Runnable.class));
 
-		when(config.itemList()).thenReturn("coins");
-		when(config.listType()).thenReturn(ListType.BLACKLIST);
+		when(config.blacklist()).thenReturn("coins");
+		when(config.whitelist()).thenReturn("");
+		when(config.unlistedItemPolicy()).thenReturn(UnlistedItemPolicy.ALLOW);
 		when(config.displayType()).thenReturn(DisplayType.TRANSPARENT);
 		when(config.contextMenuEnabled()).thenReturn(true);
+		when(config.shiftClickAddsToList()).thenReturn(false);
+		when(config.shiftClickAlchesBlocked()).thenReturn(false);
+		lenient().when(client.isKeyPressed(KeyCode.KC_SHIFT)).thenReturn(false);
+		when(config.notedItemsOnly()).thenReturn(false);
+		// Default every item id to "un-noted, tradeable, cheap" unless a test says otherwise. Helper
+		// rules only ever consult ItemManager, never client.getItemDefinition directly.
+		lenient().when(itemManager.getItemComposition(anyInt())).thenAnswer(inv -> {
+			ItemComposition comp = mock(ItemComposition.class);
+			lenient().when(comp.getNote()).thenReturn(-1);
+			lenient().when(comp.isTradeable()).thenReturn(true);
+			lenient().when(comp.getLinkedNoteId()).thenReturn(-1);
+			lenient().when(comp.getPrice()).thenReturn(1000);
+			lenient().when(comp.getHaPrice()).thenReturn(600);
+			return comp;
+		});
+		lenient().when(itemManager.getItemPrice(anyInt())).thenReturn(0);
 
 		coins = new Slot(InterfaceID.Inventory.ITEMS, COINS, "Coins");
 		bones = new Slot(InterfaceID.Inventory.ITEMS, BONES, "Bones");
@@ -99,6 +133,11 @@ public class AlchBlockerPluginBehaviourTest
 		when(highAlchSpell.getId()).thenReturn(InterfaceID.MagicSpellbook.HIGH_ALCHEMY);
 
 		plugin.startUp();
+		// startUp() runs migrate(), which writes "configVersion" via configManager even when there is
+		// nothing to migrate (an untouched mock reports every legacy key as absent already, i.e.
+		// already-current). Tests that assert on configManager writes only care about what a specific
+		// action writes, so start each test's recording from a clean slate.
+		Mockito.clearInvocations(configManager);
 	}
 
 	private void selectSpell(Widget spell)
@@ -121,6 +160,52 @@ public class AlchBlockerPluginBehaviourTest
 		when(entry.getWidget()).thenReturn(slot.widget);
 		when(entry.getItemId()).thenReturn(itemId);
 		return entry;
+	}
+
+	/** Mirrors the real client: entries[0] is Cancel, and the given entry is what a left-click performs. */
+	private void postMenuSort(MenuEntry lastEntry)
+	{
+		MenuEntry cancel = mock(MenuEntry.class);
+		when(cancel.getType()).thenReturn(MenuAction.CANCEL);
+		when(menu.getMenuEntries()).thenReturn(new MenuEntry[]{cancel, lastEntry});
+		plugin.onPostMenuSort(new PostMenuSort());
+	}
+
+	/** A menu with no Cancel line at all, e.g. a single-option menu that never grows one. */
+	private void postMenuSortWithNoCancel(MenuEntry onlyEntry)
+	{
+		when(menu.getMenuEntries()).thenReturn(new MenuEntry[]{onlyEntry});
+		plugin.onPostMenuSort(new PostMenuSort());
+	}
+
+	/** A menu entry whose widget is the given slot (or itemId -1 / a non-inventory widget if slot is null). */
+	private MenuEntry itemMenuEntry(Widget widget)
+	{
+		MenuEntry entry = mock(MenuEntry.class);
+		when(entry.getWidget()).thenReturn(widget);
+		return entry;
+	}
+
+	private void stubNoted(int itemId, boolean noted)
+	{
+		ItemComposition comp = mock(ItemComposition.class);
+		lenient().when(comp.getNote()).thenReturn(noted ? 799 : -1);
+		lenient().when(comp.isTradeable()).thenReturn(true);
+		lenient().when(comp.getLinkedNoteId()).thenReturn(-1);
+		when(itemManager.getItemComposition(itemId)).thenReturn(comp);
+	}
+
+	/** Stubs an item's composition and live GE price for the helper-rule tests. */
+	private void stubItem(int itemId, int storePrice, int haPrice, int gePrice, boolean noted, boolean tradeable)
+	{
+		ItemComposition comp = mock(ItemComposition.class);
+		lenient().when(comp.getNote()).thenReturn(noted ? 799 : -1);
+		lenient().when(comp.getPrice()).thenReturn(storePrice);
+		lenient().when(comp.getHaPrice()).thenReturn(haPrice);
+		lenient().when(comp.isTradeable()).thenReturn(tradeable);
+		lenient().when(comp.getLinkedNoteId()).thenReturn(-1);
+		when(itemManager.getItemComposition(itemId)).thenReturn(comp);
+		lenient().when(itemManager.getItemPrice(itemId)).thenReturn(gePrice);
 	}
 
 	@Test
@@ -187,6 +272,93 @@ public class AlchBlockerPluginBehaviourTest
 		assertFalse(allowed.isConsumed());
 	}
 
+	// --- Card #21/#23: opt-in shift-click to alch a blocked item anyway ---
+
+	/** Shift-click, with the override on, must alch a blocked item instead of being blocked. */
+	@Test
+	public void shiftHeldOnBlockedItemDoesNotConsumeTheAlchClick()
+	{
+		when(config.shiftClickAlchesBlocked()).thenReturn(true);
+		when(client.isKeyPressed(KeyCode.KC_SHIFT)).thenReturn(true);
+		selectSpell(highAlchSpell);
+		redrawInventory();
+
+		MenuOptionClicked click = alchClick(coins);
+		plugin.onMenuOptionClicked(click);
+		assertFalse("shift-click must not be consumed when the override is on", click.isConsumed());
+	}
+
+	/** With the toggle off (the default), shift held must make no difference at all. */
+	@Test
+	public void shiftHeldIsIgnoredWhenTheOverrideIsOff()
+	{
+		when(config.shiftClickAlchesBlocked()).thenReturn(false);
+		when(client.isKeyPressed(KeyCode.KC_SHIFT)).thenReturn(true);
+		selectSpell(highAlchSpell);
+		redrawInventory();
+
+		MenuOptionClicked click = alchClick(coins);
+		plugin.onMenuOptionClicked(click);
+		assertTrue("shift must be inert while the override is off", click.isConsumed());
+	}
+
+	/** With the override on but shift not held, the item must still be blocked as normal. */
+	@Test
+	public void unshiftedClickIsStillBlockedWhenTheOverrideIsOn()
+	{
+		when(config.shiftClickAlchesBlocked()).thenReturn(true);
+		when(client.isKeyPressed(KeyCode.KC_SHIFT)).thenReturn(false);
+		selectSpell(highAlchSpell);
+		redrawInventory();
+
+		MenuOptionClicked click = alchClick(coins);
+		plugin.onMenuOptionClicked(click);
+		assertTrue("a plain click must still be blocked", click.isConsumed());
+	}
+
+	/**
+	 * Card #21 spec: while a spell is selected, shift+click is reserved for the alch-anyway override,
+	 * not list editing - otherwise shiftClickAddsToList would hijack the click that should alch.
+	 */
+	@Test
+	public void shiftClickListEditingIsSuppressedWhileASpellIsSelected()
+	{
+		when(config.shiftClickAddsToList()).thenReturn(true);
+		when(client.isKeyPressed(KeyCode.KC_SHIFT)).thenReturn(true);
+		when(client.isWidgetSelected()).thenReturn(true);
+
+		postMenuSort(itemMenuEntry(bones.widget));
+
+		verify(menu, never()).createMenuEntry(anyInt());
+	}
+
+	/**
+	 * The Explorer's Ring has no target-mode selection, so the same collision shows up there as a
+	 * blocked item rather than a selected widget: shift+click on a currently-blocked ring item must
+	 * alch it, not open the list-editing menu entry.
+	 */
+	@Test
+	public void shiftClickListEditingIsSuppressedInTheRingContainerForABlockedItem()
+	{
+		when(config.shiftClickAddsToList()).thenReturn(true);
+		when(client.isKeyPressed(KeyCode.KC_SHIFT)).thenReturn(true);
+
+		Widget ringInventory = mock(Widget.class);
+		when(ringInventory.getId()).thenReturn(InterfaceID.LumbridgeAlchemy.ITEMS);
+		when(ringInventory.getChildren()).thenReturn(new Widget[]{coins.widget});
+		when(client.getWidget(InterfaceID.LumbridgeAlchemy.ITEMS)).thenReturn(ringInventory);
+		redrawInventory();   // coins is blacklisted, so this hides it in the ring container
+
+		Widget ringSlot = mock(Widget.class);
+		when(ringSlot.getId()).thenReturn(InterfaceID.LumbridgeAlchemy.ITEMS);
+		when(ringSlot.getItemId()).thenReturn(COINS);
+		when(ringSlot.getName()).thenReturn("Coins");
+
+		postMenuSort(itemMenuEntry(ringSlot));
+
+		verify(menu, never()).createMenuEntry(anyInt());
+	}
+
 	/** Issues #45/#46: the context menu entry must still be added when another plugin rewrites the text or NBSPs are used. */
 	@Test
 	public void contextMenuEntryAddedEvenWhenMenuTextIsRewritten()
@@ -211,8 +383,180 @@ public class AlchBlockerPluginBehaviourTest
 		verify(created).setOption("Blacklist Alchemy");
 	}
 
+	/** Sets up an inventory of two slots and returns them, replacing the default coins/bones inventory. */
+	private Slot[] inventoryOf(Slot a, Slot b)
+	{
+		Widget inventory = mock(Widget.class);
+		when(inventory.getId()).thenReturn(InterfaceID.Inventory.ITEMS);
+		when(inventory.getChildren()).thenReturn(new Widget[]{a.widget, b.widget});
+		when(client.getWidget(InterfaceID.Inventory.ITEMS)).thenReturn(inventory);
+		return new Slot[]{a, b};
+	}
+
+	private MenuOptionClicked alchClick(Slot slot)
+	{
+		return new MenuOptionClicked(alchEntry(slot, "Cast", "<col=00ff00>High Level Alchemy</col> -> <col=ff9040>x</col>"));
+	}
+
+	private ConfigChanged configChanged(String key)
+	{
+		ConfigChanged change = new ConfigChanged();
+		change.setGroup(AlchBlockerConfig.GROUP);
+		change.setKey(key);
+		return change;
+	}
+
+	/** Rob's ask: shift-click an inventory item to add its raw name to the item list. */
 	@Test
-	public void contextMenuEntryNotAddedForAlreadyBlockedItemOrNonAlchMenus()
+	public void shiftClickEntryOnlyAppearsWhenShiftHeldAndToggleEnabled()
+	{
+		when(config.shiftClickAddsToList()).thenReturn(false);
+		when(client.isKeyPressed(KeyCode.KC_SHIFT)).thenReturn(true);
+		postMenuSort(itemMenuEntry(bones.widget));
+		verify(menu, never()).createMenuEntry(anyInt());
+
+		when(config.shiftClickAddsToList()).thenReturn(true);
+		when(client.isKeyPressed(KeyCode.KC_SHIFT)).thenReturn(false);
+		postMenuSort(itemMenuEntry(bones.widget));
+		verify(menu, never()).createMenuEntry(anyInt());
+
+		MenuEntry created = mock(MenuEntry.class, withSettings().defaultAnswer(Mockito.RETURNS_SELF));
+		when(menu.createMenuEntry(1)).thenReturn(created);
+		when(client.isKeyPressed(KeyCode.KC_SHIFT)).thenReturn(true);
+		postMenuSort(itemMenuEntry(bones.widget));
+		verify(menu).createMenuEntry(1);
+		verify(created).setOption("Blacklist Alchemy");
+	}
+
+	/**
+	 * Card #20: the entry belongs directly above Cancel (entries[0]), not at the top of the menu
+	 * (the left-click action). When there is no Cancel line to sit above, it falls back to the true
+	 * bottom, index 0.
+	 */
+	@Test
+	public void shiftClickInsertsAtTheTrueBottomWhenThereIsNoCancelEntry()
+	{
+		when(config.shiftClickAddsToList()).thenReturn(true);
+		when(client.isKeyPressed(KeyCode.KC_SHIFT)).thenReturn(true);
+		MenuEntry created = mock(MenuEntry.class, withSettings().defaultAnswer(Mockito.RETURNS_SELF));
+		when(menu.createMenuEntry(0)).thenReturn(created);
+
+		postMenuSortWithNoCancel(itemMenuEntry(bones.widget));
+
+		verify(menu).createMenuEntry(0);
+		verify(created).setOption("Blacklist Alchemy");
+	}
+
+	@Test
+	public void shiftClickAddsTheRawItemNameToTheItemList()
+	{
+		when(config.shiftClickAddsToList()).thenReturn(true);
+		when(client.isKeyPressed(KeyCode.KC_SHIFT)).thenReturn(true);
+		MenuEntry created = mock(MenuEntry.class, withSettings().defaultAnswer(Mockito.RETURNS_SELF));
+		when(menu.createMenuEntry(1)).thenReturn(created);
+
+		postMenuSort(itemMenuEntry(bones.widget));
+
+		ArgumentCaptor<java.util.function.Consumer<MenuEntry>> onClick = ArgumentCaptor.forClass(java.util.function.Consumer.class);
+		verify(created).onClick(onClick.capture());
+		onClick.getValue().accept(created);
+
+		verify(configManager).setConfiguration(eq(AlchBlockerConfig.GROUP), eq("blacklist"), contains("\nBones"));
+		verify(configManager, never()).setConfiguration(any(), any(), contains("*"));
+	}
+
+	/** An exact blacklist match: shift-click moves it to the whitelist and drops the blacklist line. */
+	@Test
+	public void shiftClickOnAnAlreadyListedItemMovesItToTheWhitelist()
+	{
+		when(config.shiftClickAddsToList()).thenReturn(true);
+		when(client.isKeyPressed(KeyCode.KC_SHIFT)).thenReturn(true);
+		when(config.blacklist()).thenReturn("coins");
+		plugin.onConfigChanged(configChanged("blacklist"));
+
+		MenuEntry created = mock(MenuEntry.class, withSettings().defaultAnswer(Mockito.RETURNS_SELF));
+		when(menu.createMenuEntry(1)).thenReturn(created);
+		postMenuSort(itemMenuEntry(coins.widget));
+		verify(created).setOption("Whitelist Alchemy");
+
+		ArgumentCaptor<java.util.function.Consumer<MenuEntry>> onClick = ArgumentCaptor.forClass(java.util.function.Consumer.class);
+		verify(created).onClick(onClick.capture());
+		onClick.getValue().accept(created);
+
+		ArgumentCaptor<String> blacklistWritten = ArgumentCaptor.forClass(String.class);
+		verify(configManager).setConfiguration(eq(AlchBlockerConfig.GROUP), eq("blacklist"), blacklistWritten.capture());
+		assertFalse("the coins line must be gone from the blacklist", blacklistWritten.getValue().toLowerCase().contains("coins"));
+		verify(configManager).setConfiguration(eq(AlchBlockerConfig.GROUP), eq("whitelist"), contains("Coins"));
+
+		// Round trip: with coins now whitelisted (and gone from the blacklist), a second shift-click
+		// offers "Remove from whitelist".
+		when(config.blacklist()).thenReturn(blacklistWritten.getValue());
+		when(config.whitelist()).thenReturn("coins");
+		plugin.onConfigChanged(configChanged("whitelist"));
+		MenuEntry created2 = mock(MenuEntry.class, withSettings().defaultAnswer(Mockito.RETURNS_SELF));
+		when(menu.createMenuEntry(1)).thenReturn(created2);
+		postMenuSort(itemMenuEntry(coins.widget));
+		verify(created2).setOption("Remove from whitelist");
+	}
+
+	@Test
+	public void shiftClickNeverDeletesAWildcardPattern()
+	{
+		when(config.shiftClickAddsToList()).thenReturn(true);
+		when(client.isKeyPressed(KeyCode.KC_SHIFT)).thenReturn(true);
+		when(config.blacklist()).thenReturn("*(4)");
+		plugin.onConfigChanged(configChanged("blacklist"));
+
+		Slot prayerPotion = new Slot(InterfaceID.Inventory.ITEMS, 2434, "Prayer potion(4)");
+
+		MenuEntry created = mock(MenuEntry.class, withSettings().defaultAnswer(Mockito.RETURNS_SELF));
+		when(menu.createMenuEntry(1)).thenReturn(created);
+		postMenuSort(itemMenuEntry(prayerPotion.widget));
+		verify(created).setOption("Whitelist Alchemy");   // moves to whitelist, wildcard untouched
+
+		ArgumentCaptor<java.util.function.Consumer<MenuEntry>> onClick = ArgumentCaptor.forClass(java.util.function.Consumer.class);
+		verify(created).onClick(onClick.capture());
+		onClick.getValue().accept(created);
+
+		ArgumentCaptor<String> written = ArgumentCaptor.forClass(String.class);
+		verify(configManager).setConfiguration(eq(AlchBlockerConfig.GROUP), eq("blacklist"), written.capture());
+		assertTrue("the wildcard pattern must survive", written.getValue().contains("*(4)"));
+		verify(configManager).setConfiguration(eq(AlchBlockerConfig.GROUP), eq("whitelist"), contains("Prayer potion(4)"));
+	}
+
+	@Test
+	public void shiftClickWorksInTheExplorersRingContainerAndIsIgnoredElsewhere()
+	{
+		when(config.shiftClickAddsToList()).thenReturn(true);
+		when(client.isKeyPressed(KeyCode.KC_SHIFT)).thenReturn(true);
+
+		Widget ringSlot = mock(Widget.class);
+		when(ringSlot.getId()).thenReturn(InterfaceID.LumbridgeAlchemy.ITEMS);
+		when(ringSlot.getItemId()).thenReturn(BONES);
+		when(ringSlot.getName()).thenReturn("Bones");
+
+		MenuEntry created = mock(MenuEntry.class, withSettings().defaultAnswer(Mockito.RETURNS_SELF));
+		when(menu.createMenuEntry(1)).thenReturn(created);
+		postMenuSort(itemMenuEntry(ringSlot));
+		verify(menu, Mockito.times(1)).createMenuEntry(1);
+
+		// No item on the widget: ignored, no further entries created
+		Widget noItem = mock(Widget.class);
+		when(noItem.getId()).thenReturn(InterfaceID.Inventory.ITEMS);
+		when(noItem.getItemId()).thenReturn(-1);
+		postMenuSort(itemMenuEntry(noItem));
+		verify(menu, Mockito.times(1)).createMenuEntry(anyInt());
+
+		// A non-inventory, non-ring container: ignored, still no further entries created
+		Widget elsewhere = mock(Widget.class);
+		when(elsewhere.getId()).thenReturn(InterfaceID.MagicSpellbook.HIGH_ALCHEMY);
+		when(elsewhere.getItemId()).thenReturn(BONES);
+		postMenuSort(itemMenuEntry(elsewhere));
+		verify(menu, Mockito.times(1)).createMenuEntry(anyInt());
+	}
+
+	@Test
+	public void contextMenuOffersWhitelistEntryForAnAlreadyBlacklistedItemAndNothingForNonAlchMenus()
 	{
 		selectSpell(highAlchSpell);
 		redrawInventory();
@@ -220,11 +564,12 @@ public class AlchBlockerPluginBehaviourTest
 		MenuEntry created = mock(MenuEntry.class, withSettings().defaultAnswer(Mockito.RETURNS_SELF));
 		when(menu.createMenuEntry(anyInt())).thenReturn(created);
 
-		// Already blacklisted item: nothing to add
+		// Already blacklisted item: every state has a useful move (card #9 spec), so the entry offered
+		// is "Whitelist Alchemy" - moving the item to the whitelist - not nothing.
 		MenuOpened opened = new MenuOpened();
 		opened.setMenuEntries(new MenuEntry[]{alchEntry(coins, "Cast", "High Level Alchemy -> Coins")});
 		plugin.onMenuOpened(opened);
-		verify(menu, never()).createMenuEntry(anyInt());
+		verify(created).setOption("Whitelist Alchemy");
 
 		// Plain right-click on an item with no spell selected: nothing to add
 		selectSpell(null);
@@ -234,7 +579,608 @@ public class AlchBlockerPluginBehaviourTest
 		when(use.getTarget()).thenReturn("<col=ff9040>Bones</col>");
 		when(use.getWidget()).thenReturn(bones.widget);
 		opened.setMenuEntries(new MenuEntry[]{use});
+		Mockito.clearInvocations(menu);
 		plugin.onMenuOpened(opened);
 		verify(menu, never()).createMenuEntry(anyInt());
+	}
+
+	/** Issue #44: "only allow noted items" blocks an un-noted item the list itself would allow. */
+	@Test
+	public void notedOnlyBlocksUnnotedItemsThatTheListWouldAllow()
+	{
+		when(config.notedItemsOnly()).thenReturn(true);
+		selectSpell(highAlchSpell);
+		redrawInventory();
+
+		assertEquals("un-noted Bones must now be blocked even though it isn't on the list", 200, bones.opacity);
+		MenuOptionClicked click = alchClick(bones);
+		plugin.onMenuOptionClicked(click);
+		assertTrue(click.isConsumed());
+	}
+
+	@Test
+	public void notedOnlyLeavesNotedItemsAlchable()
+	{
+		when(config.notedItemsOnly()).thenReturn(true);
+		stubNoted(BONES, true);
+		selectSpell(highAlchSpell);
+		redrawInventory();
+
+		assertEquals(0, bones.opacity);
+		assertFalse(bones.hidden);
+		MenuOptionClicked click = alchClick(bones);
+		plugin.onMenuOptionClicked(click);
+		assertFalse(click.isConsumed());
+	}
+
+	@Test
+	public void notedOnlyAndsWithTheListInBothDirections()
+	{
+		when(config.notedItemsOnly()).thenReturn(true);
+
+		// Whitelisted but un-noted: the whitelist ranks above the helper rule now, so it's allowed.
+		when(config.blacklist()).thenReturn("");
+		when(config.whitelist()).thenReturn("bones");
+		when(config.unlistedItemPolicy()).thenReturn(UnlistedItemPolicy.BLOCK);
+		plugin.onConfigChanged(configChanged("whitelist"));
+		selectSpell(highAlchSpell);
+		redrawInventory();
+		assertEquals(0, bones.opacity);
+
+		// Blacklisted, but a noted item: still blocked, the gate doesn't override the list.
+		when(config.whitelist()).thenReturn("");
+		when(config.blacklist()).thenReturn("bones");
+		when(config.unlistedItemPolicy()).thenReturn(UnlistedItemPolicy.ALLOW);
+		plugin.onConfigChanged(configChanged("blacklist"));
+		stubNoted(BONES, true);
+		redrawInventory();
+		assertEquals(200, bones.opacity);
+	}
+
+	/** Issue #17-style regression guard: flipping the toggle must not require a spell deselect. */
+	@Test
+	public void togglingNotedOnlyRestoresItemsImmediately()
+	{
+		when(config.notedItemsOnly()).thenReturn(true);
+		selectSpell(highAlchSpell);
+		redrawInventory();
+		assertEquals(200, bones.opacity);
+
+		when(config.notedItemsOnly()).thenReturn(false);
+		plugin.onConfigChanged(configChanged("notedItemsOnly"));
+
+		assertEquals("must be restored without needing a spell deselect", 0, bones.opacity);
+		assertFalse(bones.hidden);
+	}
+
+	@Test
+	public void contextMenuOffersWhitelistForAnItemBlockedOnlyByTheNotedRule()
+	{
+		when(config.notedItemsOnly()).thenReturn(true);
+		selectSpell(highAlchSpell);
+		redrawInventory();   // Bones is now blocked purely by the noted rule, not the list
+
+		MenuEntry created = mock(MenuEntry.class, withSettings().defaultAnswer(Mockito.RETURNS_SELF));
+		when(menu.createMenuEntry(anyInt())).thenReturn(created);
+
+		MenuOpened opened = new MenuOpened();
+		opened.setMenuEntries(new MenuEntry[]{alchEntry(bones, "Cast", "High Level Alchemy -> Bones")});
+		plugin.onMenuOpened(opened);
+
+		verify(created).setOption("Whitelist Alchemy");
+
+		ArgumentCaptor<java.util.function.Consumer<MenuEntry>> onClick = ArgumentCaptor.forClass(java.util.function.Consumer.class);
+		verify(created).onClick(onClick.capture());
+		onClick.getValue().accept(created);
+
+		verify(configManager).setConfiguration(eq(AlchBlockerConfig.GROUP), eq("whitelist"), contains("Bones"));
+	}
+
+	@Test
+	public void shiftClickOffersWhitelistForAnItemBlockedOnlyByTheNotedRule()
+	{
+		when(config.notedItemsOnly()).thenReturn(true);
+		when(config.shiftClickAddsToList()).thenReturn(true);
+		when(client.isKeyPressed(KeyCode.KC_SHIFT)).thenReturn(true);
+		selectSpell(highAlchSpell);
+		redrawInventory();
+
+		MenuEntry created = mock(MenuEntry.class, withSettings().defaultAnswer(Mockito.RETURNS_SELF));
+		when(menu.createMenuEntry(1)).thenReturn(created);
+		postMenuSort(itemMenuEntry(bones.widget));
+
+		verify(created).setOption("Whitelist Alchemy");
+		ArgumentCaptor<java.util.function.Consumer<MenuEntry>> onClick = ArgumentCaptor.forClass(java.util.function.Consumer.class);
+		verify(created).onClick(onClick.capture());
+		onClick.getValue().accept(created);
+
+		verify(configManager).setConfiguration(eq(AlchBlockerConfig.GROUP), eq("whitelist"), contains("Bones"));
+	}
+
+	/**
+	 * Review finding #1 (card #4): {@code PostMenuSort} keeps firing while a menu is open and the
+	 * entry array is not rebuilt, so without a guard the plugin appends a duplicate entry on every
+	 * fire. Both core call sites ({@code MenuEntrySwapperPlugin}, {@code OverlayRenderer}) guard on
+	 * {@code client.isMenuOpen()} for this exact reason.
+	 */
+	@Test
+	public void postMenuSortIgnoredWhileMenuIsOpenToAvoidDuplicateEntries()
+	{
+		when(config.shiftClickAddsToList()).thenReturn(true);
+		when(client.isKeyPressed(KeyCode.KC_SHIFT)).thenReturn(true);
+		when(client.isMenuOpen()).thenReturn(true);
+
+		postMenuSort(itemMenuEntry(bones.widget));
+		postMenuSort(itemMenuEntry(bones.widget));
+
+		verify(menu, never()).createMenuEntry(anyInt());
+	}
+
+	/**
+	 * The whitelist ranks above helper rules, so "Whitelist Alchemy" is a working one-click fix even
+	 * when the blacklist/unlisted policy also blocks the item.
+	 */
+	@Test
+	public void helperRuleOffersAWorkingWhitelistEntryEvenWhenTheListAlsoBlocksTheItem()
+	{
+		when(config.blacklist()).thenReturn("");
+		when(config.whitelist()).thenReturn("");
+		when(config.unlistedItemPolicy()).thenReturn(UnlistedItemPolicy.BLOCK);
+		when(config.notedItemsOnly()).thenReturn(true);
+		plugin.onConfigChanged(configChanged("unlistedItemPolicy"));
+		selectSpell(highAlchSpell);
+		redrawInventory();
+		assertEquals("bones is blocked by both the list and the noted rule", 200, bones.opacity);
+
+		MenuEntry created = mock(MenuEntry.class, withSettings().defaultAnswer(Mockito.RETURNS_SELF));
+		when(menu.createMenuEntry(anyInt())).thenReturn(created);
+		MenuOpened opened = new MenuOpened();
+		opened.setMenuEntries(new MenuEntry[]{alchEntry(bones, "Cast", "High Level Alchemy -> Bones")});
+		plugin.onMenuOpened(opened);
+
+		verify(created).setOption("Whitelist Alchemy");
+
+		// And the click must actually work in one shot, not require a second click.
+		ArgumentCaptor<java.util.function.Consumer<MenuEntry>> onClick = ArgumentCaptor.forClass(java.util.function.Consumer.class);
+		verify(created).onClick(onClick.capture());
+		ArgumentCaptor<String> written = ArgumentCaptor.forClass(String.class);
+		onClick.getValue().accept(created);
+		verify(configManager).setConfiguration(eq(AlchBlockerConfig.GROUP), eq("whitelist"), written.capture());
+
+		when(config.whitelist()).thenReturn(written.getValue());
+		plugin.onConfigChanged(configChanged("whitelist"));
+		redrawInventory();
+		assertEquals("the single click must actually unblock the item", 0, bones.opacity);
+	}
+
+	/**
+	 * Card #16 decision: the whitelist now ranks above helper rules unconditionally - a whitelisted
+	 * item is never blocked by a helper rule, in either list mode.
+	 */
+	@Test
+	public void whitelistedItemIgnoresNotedItemsOnlyRule()
+	{
+		when(config.notedItemsOnly()).thenReturn(true);
+		when(config.blacklist()).thenReturn("");
+		when(config.whitelist()).thenReturn("bones");
+		when(config.unlistedItemPolicy()).thenReturn(UnlistedItemPolicy.BLOCK);
+		plugin.onConfigChanged(configChanged("whitelist"));
+		selectSpell(highAlchSpell);
+		redrawInventory();
+
+		assertEquals("a whitelisted item must not be blocked by the noted-only helper rule", 0, bones.opacity);
+		assertFalse(bones.hidden);
+		MenuOptionClicked click = alchClick(bones);
+		plugin.onMenuOptionClicked(click);
+		assertFalse(click.isConsumed());
+	}
+
+	// --- Card #8: helper rules (untradeables, value thresholds, rune cost, MTA exemption) ---
+
+	/**
+	 * With every helper rule off (the shipped default), the plugin must behave exactly like
+	 * pre-helper-rules Alch Blocker: zero ItemManager lookups, only the list verdict (card #8 spec's
+	 * fast path).
+	 */
+	@Test
+	public void noHelperRulesEnabledPerformsNoItemLookups()
+	{
+		selectSpell(highAlchSpell);
+		redrawInventory();
+
+		Mockito.verifyNoInteractions(itemManager);
+	}
+
+	/**
+	 * Final review finding #1: an empty inventory slot's item id is -1, which is not in
+	 * {@code HELPER_RULE_EXEMPT_ITEMS}, so without an explicit skip every empty slot would run
+	 * helper-rule item lookups (an unguarded {@code itemManager.getItemComposition(-1)} on every
+	 * redraw, worse the more slots are empty).
+	 */
+	@Test
+	public void emptySlotsAreSkippedBeforeHelperRuleLookups()
+	{
+		when(config.minAlchValue()).thenReturn(1000);
+		plugin.onConfigChanged(configChanged("minAlchValue"));
+		Slot emptySlot = new Slot(InterfaceID.Inventory.ITEMS, -1, "");
+		inventoryOf(coins, emptySlot);
+		selectSpell(highAlchSpell);
+		redrawInventory();
+
+		verify(itemManager, never()).getItemComposition(-1);
+	}
+
+	/** Minimum alch value blocks an item the list itself would allow. */
+	@Test
+	public void minAlchValueBlocksItemTheListWouldAllow()
+	{
+		when(config.minAlchValue()).thenReturn(1000);
+		stubItem(BONES, 1000, 400, 400, false, true);
+		plugin.onConfigChanged(configChanged("minAlchValue"));
+		selectSpell(highAlchSpell);
+		redrawInventory();
+
+		assertEquals("alch value 400 is below the 1000 minimum", 200, bones.opacity);
+		MenuOptionClicked click = alchClick(bones);
+		plugin.onMenuOptionClicked(click);
+		assertTrue(click.isConsumed());
+	}
+
+	/**
+	 * Card #16 decision: the whitelist now beats a helper rule - it is a block on top of the list,
+	 * but under the whitelist.
+	 */
+	@Test
+	public void whitelistedItemIgnoresHelperRules()
+	{
+		when(config.blacklist()).thenReturn("");
+		when(config.whitelist()).thenReturn("bones");
+		when(config.unlistedItemPolicy()).thenReturn(UnlistedItemPolicy.BLOCK);
+		when(config.blockUntradeable()).thenReturn(true);
+		stubItem(BONES, 1000, 600, 1000, false, false);
+		plugin.onConfigChanged(configChanged("whitelist"));
+		selectSpell(highAlchSpell);
+		redrawInventory();
+
+		assertEquals("an exact whitelist match must beat blockUntradeable", 0, bones.opacity);
+		assertFalse(bones.hidden);
+		MenuOptionClicked click = alchClick(bones);
+		plugin.onMenuOptionClicked(click);
+		assertFalse(click.isConsumed());
+	}
+
+	/** A helper rule still blocks an item that is on neither list. */
+	@Test
+	public void helperRuleStillBlocksUnlistedItem()
+	{
+		when(config.blockUntradeable()).thenReturn(true);
+		when(config.blacklist()).thenReturn("");
+		when(config.whitelist()).thenReturn("");
+		stubItem(BONES, 1000, 600, 1000, false, false);
+		plugin.onConfigChanged(configChanged("blockUntradeable"));
+		selectSpell(highAlchSpell);
+		redrawInventory();
+
+		assertEquals("bones is on neither list, so blockUntradeable still blocks it", 200, bones.opacity);
+		MenuOptionClicked click = alchClick(bones);
+		plugin.onMenuOptionClicked(click);
+		assertTrue(click.isConsumed());
+	}
+
+	/**
+	 * Noted items report {@code isTradeable() == false} even when the unnoted item is tradeable
+	 * (no-bad-alchs' 1.2.1 fix). Without checking the linked unnoted variant, blockUntradeable would
+	 * hide every noted item.
+	 */
+	@Test
+	public void untradeableRuleAllowsNotedFormOfATradeableItem()
+	{
+		when(config.blockUntradeable()).thenReturn(true);
+
+		int unnotedId = 9001;
+		int notedId = 9002;
+
+		ItemComposition unnotedComp = mock(ItemComposition.class);
+		lenient().when(unnotedComp.isTradeable()).thenReturn(true);
+		lenient().when(itemManager.getItemComposition(unnotedId)).thenReturn(unnotedComp);
+
+		ItemComposition notedComp = mock(ItemComposition.class);
+		lenient().when(notedComp.getNote()).thenReturn(799);
+		lenient().when(notedComp.isTradeable()).thenReturn(false);
+		lenient().when(notedComp.getLinkedNoteId()).thenReturn(unnotedId);
+		lenient().when(notedComp.getHaPrice()).thenReturn(600);
+		lenient().when(itemManager.getItemComposition(notedId)).thenReturn(notedComp);
+
+		Slot notedPotion = new Slot(InterfaceID.Inventory.ITEMS, notedId, "Prayer potion(4)");
+		inventoryOf(notedPotion, bones);
+		selectSpell(highAlchSpell);
+		redrawInventory();
+
+		assertEquals("the noted item's unnoted variant is tradeable, so it must stay alchable", 0, notedPotion.opacity);
+		assertFalse(notedPotion.hidden);
+	}
+
+	/**
+	 * The alch-loss rule's threshold is the GE price after tax, plus the required profit margin, plus
+	 * rune cost when enabled. High alch value 1000, GE price 900 (882 after the 2% tax), margin 50,
+	 * runes 150 (1 nature @ 100 + 5 fire @ 10) -> threshold 1082, so 1000 must be blocked. Turning rune
+	 * cost off drops the threshold to 932, so the same item must then be allowed.
+	 */
+	@Test
+	public void alchLossRuleAddsRuneCostAndMargin()
+	{
+		when(config.blockAlchLoss()).thenReturn(true);
+		when(config.includeRuneCost()).thenReturn(true);
+		when(config.alchProfitMargin()).thenReturn(50);
+		lenient().when(itemManager.getItemPrice(ItemID.NATURERUNE)).thenReturn(100);
+		lenient().when(itemManager.getItemPrice(ItemID.FIRERUNE)).thenReturn(10);
+		stubItem(BONES, 1000, 1000, 900, false, true);
+		selectSpell(highAlchSpell);
+		redrawInventory();
+
+		assertEquals("1000 < 882 + 50 + 150 = 1082", 200, bones.opacity);
+
+		when(config.includeRuneCost()).thenReturn(false);
+		plugin.onConfigChanged(configChanged("includeRuneCost"));
+
+		assertEquals("without rune cost, 1000 >= 882 + 50 = 932", 0, bones.opacity);
+	}
+
+	/** Explorer's Ring casts are free, so rune cost must never be counted even when the setting is on. */
+	@Test
+	public void explorerRingCastDoesNotCountRuneCost()
+	{
+		when(config.blockAlchLoss()).thenReturn(true);
+		when(config.includeRuneCost()).thenReturn(true);
+		when(config.alchProfitMargin()).thenReturn(50);
+		lenient().when(itemManager.getItemPrice(ItemID.NATURERUNE)).thenReturn(100);
+		lenient().when(itemManager.getItemPrice(ItemID.FIRERUNE)).thenReturn(10);
+		stubItem(BONES, 1000, 1000, 900, false, true);
+		lenient().when(client.getVarbitValue(VarbitID.LUMBRIDGE_ALCHEMY_HIGH)).thenReturn(1);
+
+		Widget ringInventory = mock(Widget.class);
+		when(ringInventory.getId()).thenReturn(InterfaceID.LumbridgeAlchemy.ITEMS);
+		when(ringInventory.getChildren()).thenReturn(new Widget[]{bones.widget});
+		when(client.getWidget(InterfaceID.LumbridgeAlchemy.ITEMS)).thenReturn(ringInventory);
+
+		redrawInventory();
+
+		assertEquals("ring casts are free: 1000 >= 882 + 50 = 932 with no rune cost", 0, bones.opacity);
+	}
+
+	/** Low alch uses 40% of store price; high alch uses the client's authoritative high alch price. */
+	@Test
+	public void lowAlchUsesFortyPercentAndHighUsesHaPrice()
+	{
+		when(config.minAlchValue()).thenReturn(500);
+		stubItem(BONES, 1000, 700, 0, false, true);
+		plugin.onConfigChanged(configChanged("minAlchValue"));
+
+		Widget lowAlchSpell = mock(Widget.class);
+		when(lowAlchSpell.getId()).thenReturn(InterfaceID.MagicSpellbook.LOW_ALCHEMY);
+
+		selectSpell(lowAlchSpell);
+		redrawInventory();
+		assertEquals("low alch value 400 (40% of 1000) is below the 500 minimum", 200, bones.opacity);
+
+		// Deselect first (as a real cancel would) so the previous block doesn't linger: hideBlockedItems
+		// only ever adds new blocks, it doesn't itself lift one from a prior pass.
+		selectSpell(null);
+		redrawInventory();
+		selectSpell(highAlchSpell);
+		redrawInventory();
+		assertEquals("high alch value 700 meets the 500 minimum", 0, bones.opacity);
+	}
+
+	/**
+	 * Mage Training Arena reward items have a store price of 1, so any value-based helper rule would
+	 * hide them and break the minigame. They are exempt from helper rules only - the item list can
+	 * still block one by name.
+	 */
+	@Test
+	public void mageTrainingArenaItemsAreExemptFromHelperRules()
+	{
+		when(config.minAlchValue()).thenReturn(1000);
+		int mtaItemId = ItemID.MAGICTRAINING_EMERALD;
+		stubItem(mtaItemId, 1, 1, 1, false, true);
+		Slot mtaItem = new Slot(InterfaceID.Inventory.ITEMS, mtaItemId, "Charged emerald");
+		inventoryOf(mtaItem, bones);
+		plugin.onConfigChanged(configChanged("minAlchValue"));
+		selectSpell(highAlchSpell);
+		redrawInventory();
+
+		assertEquals("MTA items are exempt from helper rules", 0, mtaItem.opacity);
+
+		when(config.blacklist()).thenReturn("charged emerald");
+		plugin.onConfigChanged(configChanged("blacklist"));
+
+		assertEquals("the exemption covers helper rules only - the list can still block it by name", 200, mtaItem.opacity);
+	}
+
+	// --- Card #9: two-list model + migration ---
+
+	private Map<String, Object> configStore;
+
+	/**
+	 * Stands the mocked {@code configManager} in for a real profile's key/value store, so
+	 * {@code migrate()} can be driven end to end (read legacy keys, write new ones, and see those
+	 * writes on a second call) rather than only checked via {@code verify()} call counts.
+	 */
+	private void wireConfigManagerAsStore() {
+		configStore = new HashMap<>();
+		lenient().when(configManager.getConfiguration(eq(AlchBlockerConfig.GROUP), anyString())).thenAnswer(inv -> {
+			Object v = configStore.get((String) inv.getArgument(1));
+			return v == null ? null : v.toString();
+		});
+		lenient().when(configManager.getConfiguration(eq(AlchBlockerConfig.GROUP), anyString(), ArgumentMatchers.<java.lang.reflect.Type>any())).thenAnswer(inv ->
+			configStore.get((String) inv.getArgument(1))
+		);
+		// ConfigManager overloads setConfiguration as both (group, key, String) and a generic
+		// (group, key, T) - an any() matcher on the third argument binds to only one of them (the
+		// compiler picks the most specific applicable overload), so each concrete type migrate()
+		// actually writes needs its own stub to be intercepted.
+		lenient().doAnswer(inv -> {
+			configStore.put((String) inv.getArgument(1), inv.getArgument(2));
+			return null;
+		}).when(configManager).setConfiguration(eq(AlchBlockerConfig.GROUP), anyString(), anyString());
+		lenient().doAnswer(inv -> {
+			configStore.put((String) inv.getArgument(1), inv.getArgument(2));
+			return null;
+		}).when(configManager).setConfiguration(eq(AlchBlockerConfig.GROUP), anyString(), any(UnlistedItemPolicy.class));
+		lenient().doAnswer(inv -> {
+			configStore.put((String) inv.getArgument(1), inv.getArgument(2));
+			return null;
+		}).when(configManager).setConfiguration(eq(AlchBlockerConfig.GROUP), anyString(), any(Integer.class));
+	}
+
+	/** Migration must be a no-op the second time it runs (idempotent on the configVersion marker). */
+	@Test
+	public void migrationRunsTwiceIsANoOp() throws Exception {
+		wireConfigManagerAsStore();
+		configStore.put("itemList", "dragon dagger");
+		configStore.put("listType", ListType.BLACKLIST);
+
+		plugin.startUp();
+		Map<String, Object> afterFirstMigration = new HashMap<>(configStore);
+
+		Mockito.clearInvocations(configManager);
+		plugin.startUp();
+
+		assertEquals("a second migration must not change the store", afterFirstMigration, configStore);
+		verify(configManager, never()).setConfiguration(eq(AlchBlockerConfig.GROUP), eq("blacklist"), any());
+		verify(configManager, never()).setConfiguration(eq(AlchBlockerConfig.GROUP), eq("whitelist"), any());
+		verify(configManager, never()).setConfiguration(eq(AlchBlockerConfig.GROUP), eq("unlistedItemPolicy"), any());
+	}
+
+	/** A legacy WHITELIST install's entries land in the new whitelist box, not the blacklist. */
+	@Test
+	public void oldInstallWithListTypeWhitelistLandsWithEntriesInWhitelist() throws Exception {
+		wireConfigManagerAsStore();
+		configStore.put("itemList", "rune scimitar\ndragon dagger");
+		configStore.put("listType", ListType.WHITELIST);
+
+		plugin.startUp();
+
+		assertEquals("rune scimitar\ndragon dagger", configStore.get("whitelist"));
+		assertEquals(UnlistedItemPolicy.BLOCK, configStore.get("unlistedItemPolicy"));
+		// Trap #1: blacklist's own default is the rune pouch/dose list, so it must be explicitly
+		// cleared - a migrated whitelist user must not inherit blacklist entries they never asked for.
+		assertEquals("", configStore.get("blacklist"));
+	}
+
+	/** A legacy BLACKLIST install keeps its list as the blacklist, under the ALLOW policy. */
+	@Test
+	public void oldBlacklistInstallKeepsItsListAndAllowPolicy() throws Exception {
+		wireConfigManagerAsStore();
+		configStore.put("itemList", "coins");
+		configStore.put("listType", ListType.BLACKLIST);
+
+		plugin.startUp();
+
+		assertEquals("coins", configStore.get("blacklist"));
+		assertEquals(UnlistedItemPolicy.ALLOW, configStore.get("unlistedItemPolicy"));
+		assertEquals("whitelist is left unset; its own default is already empty", null, configStore.get("whitelist"));
+	}
+
+	/**
+	 * Trap #2: an untouched install never wrote {@code itemList}/{@code listType} at all (RuneLite
+	 * only persists a key once it differs from the interface default), so null must be read as "was
+	 * on the default", not "empty" - migrate() must leave the new blacklist on its own default rather
+	 * than blanking it.
+	 */
+	@Test
+	public void untouchedInstallMigratesToTheDefaultBlacklist() throws Exception {
+		wireConfigManagerAsStore();
+		// Both legacy keys are absent - simulates the config interface's own defaults, which a real
+		// ConfigManager proxy would already be returning for an install that never touched these keys.
+		when(config.blacklist()).thenReturn("*Rune Pouch\n*(1)\n*(2)\n*(3)\n*(4)\n");
+		when(config.whitelist()).thenReturn("");
+		when(config.unlistedItemPolicy()).thenReturn(UnlistedItemPolicy.ALLOW);
+
+		plugin.startUp();
+
+		verify(configManager, never()).setConfiguration(eq(AlchBlockerConfig.GROUP), eq("blacklist"), any());
+		Slot runePouch = new Slot(InterfaceID.Inventory.ITEMS, 27281, "Rune pouch");
+		inventoryOf(runePouch, bones);
+		selectSpell(highAlchSpell);
+		redrawInventory();
+		assertEquals("Rune pouch is still blocked by the untouched default", 200, runePouch.opacity);
+	}
+
+	/**
+	 * RuneLite config keys are profile-scoped, so switching to a profile that has never been
+	 * migrated must migrate it there and then, not just at client startup.
+	 */
+	@Test
+	public void profileChangeMigratesAnUnmigratedProfile() {
+		wireConfigManagerAsStore();
+		configStore.put("itemList", "abyssal whip");
+		configStore.put("listType", ListType.WHITELIST);
+
+		plugin.onProfileChanged(new ProfileChanged());
+
+		assertEquals("abyssal whip", configStore.get("whitelist"));
+		assertEquals(2, configStore.get("configVersion"));
+
+		Mockito.clearInvocations(configManager);
+		plugin.onProfileChanged(new ProfileChanged());
+		verify(configManager, never()).setConfiguration(eq(AlchBlockerConfig.GROUP), eq("whitelist"), any());
+	}
+
+	/** Precedence row 4 above row 5: the whitelist beats a blacklist wildcard match. */
+	@Test
+	public void whitelistEntryOverridesBlacklistWildcard() {
+		when(config.blacklist()).thenReturn("*(4)");
+		when(config.whitelist()).thenReturn("prayer potion(4)");
+		when(config.unlistedItemPolicy()).thenReturn(UnlistedItemPolicy.ALLOW);
+		plugin.onConfigChanged(configChanged("whitelist"));
+
+		Slot prayerPotion = new Slot(InterfaceID.Inventory.ITEMS, 2434, "Prayer potion(4)");
+		Slot superCombat = new Slot(InterfaceID.Inventory.ITEMS, 12695, "Super combat potion(4)");
+		inventoryOf(prayerPotion, superCombat);
+		selectSpell(highAlchSpell);
+		redrawInventory();
+
+		assertEquals("the whitelist beats the blacklist's wildcard match", 0, prayerPotion.opacity);
+		MenuOptionClicked click = alchClick(prayerPotion);
+		plugin.onMenuOptionClicked(click);
+		assertFalse(click.isConsumed());
+		assertEquals("super combat potion is still blacklisted", 200, superCombat.opacity);
+	}
+
+	/** The context menu's move-to-whitelist action drops the exact blacklist line it came from. */
+	@Test
+	public void movingAnItemToTheWhitelistRemovesItsBlacklistLine() {
+		when(config.blacklist()).thenReturn("coins");
+		plugin.onConfigChanged(configChanged("blacklist"));
+		selectSpell(highAlchSpell);
+		redrawInventory();
+
+		MenuEntry created = mock(MenuEntry.class, withSettings().defaultAnswer(Mockito.RETURNS_SELF));
+		when(menu.createMenuEntry(anyInt())).thenReturn(created);
+		MenuOpened opened = new MenuOpened();
+		opened.setMenuEntries(new MenuEntry[]{alchEntry(coins, "Cast", "High Level Alchemy -> Coins")});
+		plugin.onMenuOpened(opened);
+		verify(created).setOption("Whitelist Alchemy");
+
+		ArgumentCaptor<java.util.function.Consumer<MenuEntry>> onClick = ArgumentCaptor.forClass(java.util.function.Consumer.class);
+		verify(created).onClick(onClick.capture());
+		onClick.getValue().accept(created);
+
+		verify(configManager).setConfiguration(eq(AlchBlockerConfig.GROUP), eq("blacklist"),
+			argThat(written -> !written.toLowerCase().contains("coins")));
+		verify(configManager).setConfiguration(eq(AlchBlockerConfig.GROUP), eq("whitelist"), contains("Coins"));
+	}
+	/** Phase 1 (card #9 spec section 6.2): the legacy keys must survive migration, for a safe rollback. */
+	@Test
+	public void legacyKeysSurvivePhaseOneMigration() throws Exception {
+		wireConfigManagerAsStore();
+		configStore.put("itemList", "coins");
+		configStore.put("listType", ListType.BLACKLIST);
+
+		plugin.startUp();
+
+		assertEquals("coins", configStore.get("itemList"));
+		assertEquals(ListType.BLACKLIST, configStore.get("listType"));
 	}
 }
