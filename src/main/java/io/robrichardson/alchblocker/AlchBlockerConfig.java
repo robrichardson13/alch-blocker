@@ -174,7 +174,7 @@ public interface AlchBlockerConfig extends Config
 	@ConfigItem(
 		keyName = "shiftClickAddsToList",
 		name = "Shift-click adds to item list",
-		description = "Hold shift and left-click an inventory item to add its exact name to the item list (shift-click again to remove it). Off by default: conflicts with Menu Entry Swapper's shift-click drop.",
+		description = "Hold shift and right-click an inventory item to show Blacklist/Whitelist Alchemy at the bottom of the menu (shift+right-click again to reverse it). Off by default: conflicts with Menu Entry Swapper's shift-click drop.",
 		position = 14
 	)
 	default boolean shiftClickAddsToList()

@@ -211,9 +211,19 @@ public class AlchBlockerPluginBehaviourTest
 		throw new AssertionError("No option registered containing: " + textContains + ", options were: " + texts);
 	}
 
+	/** Mirrors the real client: entries[0] is Cancel, and the given entry is what a left-click performs. */
 	private void postMenuSort(MenuEntry lastEntry)
 	{
-		when(menu.getMenuEntries()).thenReturn(new MenuEntry[]{lastEntry});
+		MenuEntry cancel = mock(MenuEntry.class);
+		when(cancel.getType()).thenReturn(MenuAction.CANCEL);
+		when(menu.getMenuEntries()).thenReturn(new MenuEntry[]{cancel, lastEntry});
+		plugin.onPostMenuSort(new PostMenuSort());
+	}
+
+	/** A menu with no Cancel line at all, e.g. a single-option menu that never grows one. */
+	private void postMenuSortWithNoCancel(MenuEntry onlyEntry)
+	{
+		when(menu.getMenuEntries()).thenReturn(new MenuEntry[]{onlyEntry});
 		plugin.onPostMenuSort(new PostMenuSort());
 	}
 
@@ -573,10 +583,29 @@ public class AlchBlockerPluginBehaviourTest
 		verify(menu, never()).createMenuEntry(anyInt());
 
 		MenuEntry created = mock(MenuEntry.class, withSettings().defaultAnswer(Mockito.RETURNS_SELF));
-		when(menu.createMenuEntry(-1)).thenReturn(created);
+		when(menu.createMenuEntry(1)).thenReturn(created);
 		when(client.isKeyPressed(KeyCode.KC_SHIFT)).thenReturn(true);
 		postMenuSort(itemMenuEntry(bones.widget));
-		verify(menu).createMenuEntry(-1);
+		verify(menu).createMenuEntry(1);
+		verify(created).setOption("Blacklist Alchemy");
+	}
+
+	/**
+	 * Card #20: the entry belongs directly above Cancel (entries[0]), not at the top of the menu
+	 * (the left-click action). When there is no Cancel line to sit above, it falls back to the true
+	 * bottom, index 0.
+	 */
+	@Test
+	public void shiftClickInsertsAtTheTrueBottomWhenThereIsNoCancelEntry()
+	{
+		when(config.shiftClickAddsToList()).thenReturn(true);
+		when(client.isKeyPressed(KeyCode.KC_SHIFT)).thenReturn(true);
+		MenuEntry created = mock(MenuEntry.class, withSettings().defaultAnswer(Mockito.RETURNS_SELF));
+		when(menu.createMenuEntry(0)).thenReturn(created);
+
+		postMenuSortWithNoCancel(itemMenuEntry(bones.widget));
+
+		verify(menu).createMenuEntry(0);
 		verify(created).setOption("Blacklist Alchemy");
 	}
 
@@ -586,7 +615,7 @@ public class AlchBlockerPluginBehaviourTest
 		when(config.shiftClickAddsToList()).thenReturn(true);
 		when(client.isKeyPressed(KeyCode.KC_SHIFT)).thenReturn(true);
 		MenuEntry created = mock(MenuEntry.class, withSettings().defaultAnswer(Mockito.RETURNS_SELF));
-		when(menu.createMenuEntry(-1)).thenReturn(created);
+		when(menu.createMenuEntry(1)).thenReturn(created);
 
 		postMenuSort(itemMenuEntry(bones.widget));
 
@@ -608,7 +637,7 @@ public class AlchBlockerPluginBehaviourTest
 		plugin.onConfigChanged(configChanged("blacklist"));
 
 		MenuEntry created = mock(MenuEntry.class, withSettings().defaultAnswer(Mockito.RETURNS_SELF));
-		when(menu.createMenuEntry(-1)).thenReturn(created);
+		when(menu.createMenuEntry(1)).thenReturn(created);
 		postMenuSort(itemMenuEntry(coins.widget));
 		verify(created).setOption("Whitelist Alchemy");
 
@@ -627,7 +656,7 @@ public class AlchBlockerPluginBehaviourTest
 		when(config.whitelist()).thenReturn("coins");
 		plugin.onConfigChanged(configChanged("whitelist"));
 		MenuEntry created2 = mock(MenuEntry.class, withSettings().defaultAnswer(Mockito.RETURNS_SELF));
-		when(menu.createMenuEntry(-1)).thenReturn(created2);
+		when(menu.createMenuEntry(1)).thenReturn(created2);
 		postMenuSort(itemMenuEntry(coins.widget));
 		verify(created2).setOption("Remove from whitelist");
 	}
@@ -643,7 +672,7 @@ public class AlchBlockerPluginBehaviourTest
 		Slot prayerPotion = new Slot(InterfaceID.Inventory.ITEMS, 2434, "Prayer potion(4)");
 
 		MenuEntry created = mock(MenuEntry.class, withSettings().defaultAnswer(Mockito.RETURNS_SELF));
-		when(menu.createMenuEntry(-1)).thenReturn(created);
+		when(menu.createMenuEntry(1)).thenReturn(created);
 		postMenuSort(itemMenuEntry(prayerPotion.widget));
 		verify(created).setOption("Whitelist Alchemy");   // moves to whitelist, wildcard untouched
 
@@ -669,9 +698,9 @@ public class AlchBlockerPluginBehaviourTest
 		when(ringSlot.getName()).thenReturn("Bones");
 
 		MenuEntry created = mock(MenuEntry.class, withSettings().defaultAnswer(Mockito.RETURNS_SELF));
-		when(menu.createMenuEntry(-1)).thenReturn(created);
+		when(menu.createMenuEntry(1)).thenReturn(created);
 		postMenuSort(itemMenuEntry(ringSlot));
-		verify(menu, Mockito.times(1)).createMenuEntry(-1);
+		verify(menu, Mockito.times(1)).createMenuEntry(1);
 
 		// No item on the widget: ignored, no further entries created
 		Widget noItem = mock(Widget.class);
@@ -819,7 +848,7 @@ public class AlchBlockerPluginBehaviourTest
 		redrawInventory();
 
 		MenuEntry created = mock(MenuEntry.class, withSettings().defaultAnswer(Mockito.RETURNS_SELF));
-		when(menu.createMenuEntry(-1)).thenReturn(created);
+		when(menu.createMenuEntry(1)).thenReturn(created);
 		postMenuSort(itemMenuEntry(bones.widget));
 
 		verify(created).setOption("Whitelist Alchemy");

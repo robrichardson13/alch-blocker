@@ -439,12 +439,15 @@ public class AlchBlockerPlugin extends Plugin
 	}
 
 	/**
-	 * Rob's ask: shift-click an inventory item to add its raw name to the item list (shift-click
-	 * again to remove it). Detected in PostMenuSort rather than MenuOpened/MenuEntryAdded because a
-	 * shift-click is a *left*-click, whose action is whatever entry is last in the sorted menu -
-	 * PostMenuSort fires exactly once per rebuild, right after sorting and only when the menu isn't
-	 * open, so there's nothing to dedupe. Off by default: shift-left-click on an inventory item is
-	 * already Menu Entry Swapper's shift-click-drop shortcut for a lot of users.
+	 * Rob's ask: hold shift and hover an inventory item to show Blacklist/Whitelist Alchemy at the
+	 * bottom of the menu, directly above Cancel (shift+right-click again to reverse it). Card #20:
+	 * the entry used to be inserted at the top, i.e. the left-click action - Rob wants it at the
+	 * bottom instead, so shift+left-click no longer triggers it; the feature is now shift+right-click
+	 * only. Detected in PostMenuSort rather than MenuOpened/MenuEntryAdded because it needs to run
+	 * whenever the menu is (re)built under the cursor, not just when it's opened - PostMenuSort fires
+	 * exactly once per rebuild, right after sorting and only when the menu isn't open, so there's
+	 * nothing to dedupe. Off by default: shift-left-click on an inventory item is already Menu Entry
+	 * Swapper's shift-click-drop shortcut for a lot of users.
 	 */
 	@Subscribe
 	public void onPostMenuSort(PostMenuSort event) {
@@ -479,7 +482,12 @@ public class AlchBlockerPlugin extends Plugin
 		final String plainName = Text.removeTags(itemName).replace('\u00A0', ' ').trim();
 		final boolean ringPowered = container == EXPLORERS_RING_INVENTORY_WIDGET_ID;
 
-		client.getMenu().createMenuEntry(-1)
+		// entries[0] is Cancel (MenuAction.CANCEL) whenever the game shows one - the client puts it in
+		// the array rather than rendering it separately - so inserting at index 1 lands directly above
+		// it. A menu with no Cancel line (entries[0] isn't Cancel, or the array is empty) inserts at
+		// the true bottom, index 0, instead.
+		int insertAt = entries[0].getType() == MenuAction.CANCEL ? 1 : 0;
+		client.getMenu().createMenuEntry(insertAt)
 			.setOption(primaryListActionLabel(w.getItemId(), plainName, ringPowered))
 			.setTarget(itemName)
 			.setType(MenuAction.RUNELITE)

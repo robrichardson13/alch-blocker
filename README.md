@@ -22,7 +22,8 @@ alch). Right-click an inventory item while an alchemy spell is selected for a si
 option that always does the one useful thing for that item's current state -
 "Blacklist Alchemy"/"Whitelist Alchemy" moves it to the right list (including for an item blocked
 only by a helper rule, since whitelisting it is enough to allow it), and "Remove from whitelist"
-takes it off again - or hold shift and left-click it to do the same thing without the menu.
+takes it off again - or hold shift and right-click it to show that same option at the bottom of
+the menu (a shift+right-click config option, off by default).
 
 If you're upgrading from an older version, your existing item list and list type are converted
 automatically the first time the new version runs - nothing to do on your end.
