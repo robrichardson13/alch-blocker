@@ -118,7 +118,7 @@ public class AlchBlockerPluginBehaviourTest
 			lenient().when(comp.getHaPrice()).thenReturn(600);
 			return comp;
 		});
-		lenient().when(itemManager.getItemPrice(anyInt())).thenReturn(0);
+		lenient().when(itemManager.getItemPrice(anyInt())).thenReturn(0L);
 
 		coins = new Slot(InterfaceID.Inventory.ITEMS, COINS, "Coins");
 		bones = new Slot(InterfaceID.Inventory.ITEMS, BONES, "Bones");
@@ -205,7 +205,7 @@ public class AlchBlockerPluginBehaviourTest
 		lenient().when(comp.isTradeable()).thenReturn(tradeable);
 		lenient().when(comp.getLinkedNoteId()).thenReturn(-1);
 		when(itemManager.getItemComposition(itemId)).thenReturn(comp);
-		lenient().when(itemManager.getItemPrice(itemId)).thenReturn(gePrice);
+		lenient().when(itemManager.getItemPrice(itemId)).thenReturn((long) gePrice);
 	}
 
 	@Test
@@ -912,8 +912,8 @@ public class AlchBlockerPluginBehaviourTest
 		when(config.blockAlchLoss()).thenReturn(true);
 		when(config.includeRuneCost()).thenReturn(true);
 		when(config.alchProfitMargin()).thenReturn(50);
-		lenient().when(itemManager.getItemPrice(ItemID.NATURERUNE)).thenReturn(100);
-		lenient().when(itemManager.getItemPrice(ItemID.FIRERUNE)).thenReturn(10);
+		lenient().when(itemManager.getItemPrice(ItemID.NATURERUNE)).thenReturn(100L);
+		lenient().when(itemManager.getItemPrice(ItemID.FIRERUNE)).thenReturn(10L);
 		stubItem(BONES, 1000, 1000, 900, false, true);
 		selectSpell(highAlchSpell);
 		redrawInventory();
@@ -933,8 +933,8 @@ public class AlchBlockerPluginBehaviourTest
 		when(config.blockAlchLoss()).thenReturn(true);
 		when(config.includeRuneCost()).thenReturn(true);
 		when(config.alchProfitMargin()).thenReturn(50);
-		lenient().when(itemManager.getItemPrice(ItemID.NATURERUNE)).thenReturn(100);
-		lenient().when(itemManager.getItemPrice(ItemID.FIRERUNE)).thenReturn(10);
+		lenient().when(itemManager.getItemPrice(ItemID.NATURERUNE)).thenReturn(100L);
+		lenient().when(itemManager.getItemPrice(ItemID.FIRERUNE)).thenReturn(10L);
 		stubItem(BONES, 1000, 1000, 900, false, true);
 		lenient().when(client.getVarbitValue(VarbitID.LUMBRIDGE_ALCHEMY_HIGH)).thenReturn(1);
 

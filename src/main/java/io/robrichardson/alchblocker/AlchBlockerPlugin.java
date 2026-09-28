@@ -614,9 +614,9 @@ public class AlchBlockerPlugin extends Plugin
 	private static final class AlchContext
 	{
 		final boolean high;
-		final int runeCost;
+		final long runeCost;
 
-		AlchContext(boolean high, int runeCost) {
+		AlchContext(boolean high, long runeCost) {
 			this.high = high;
 			this.runeCost = runeCost;
 		}
@@ -632,7 +632,7 @@ public class AlchBlockerPlugin extends Plugin
 			high = selectedWidget != null && selectedWidget.getId() == HIGH_ALCHEMY_WIDGET_ID;
 		}
 
-		int runeCost = 0;
+		long runeCost = 0;
 		if (!ringPowered && config.includeRuneCost()) {
 			runeCost = itemManager.getItemPrice(ItemID.NATURERUNE) + 5 * itemManager.getItemPrice(ItemID.FIRERUNE);
 		}
@@ -659,7 +659,7 @@ public class AlchBlockerPlugin extends Plugin
 			return true;
 		}
 		if (config.blockAlchLoss()) {
-			int threshold = afterGeTax(itemManager.getItemPrice(itemId)) + config.alchProfitMargin() + ctx.runeCost;
+			long threshold = afterGeTax(itemManager.getItemPrice(itemId)) + config.alchProfitMargin() + ctx.runeCost;
 			if (alchValue < threshold) {
 				return true;
 			}
@@ -691,11 +691,11 @@ public class AlchBlockerPlugin extends Plugin
 	}
 
 	/** Sub-50gp items are GE tax exempt; otherwise 2%, capped at 5,000,000 gp (Jagex-tunable numbers). */
-	private static int afterGeTax(int price) {
+	private static long afterGeTax(long price) {
 		if (price < 50) {
 			return price;
 		}
-		return price - Math.min(5_000_000, (int) (price * 0.02));
+		return price - Math.min(5_000_000L, (long) (price * 0.02));
 	}
 
 	/**
